@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 log = "0.4"
 url = "2.5"
-rand = "0.9"
+rand = "0.10"
 regex = "1.11"
 anyhow = "1.0"
 scraper = "0.23"
