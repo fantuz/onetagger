@@ -1,0 +1,15 @@
+name: Probe macOS ARM64 capacity
+on:
+  push:
+    branches: [ci/probe-macos15-arm64]
+permissions: {}
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - name: Confirm ARM64 runner
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          sw_vers
