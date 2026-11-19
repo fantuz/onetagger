@@ -1,0 +1,23 @@
+name: Provider benchmark on package runner
+on:
+  push:
+    branches: [verify/provider-pace-arm64]
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 68014b4038472da886076552f8d5a02c8e12b588
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Run the scheduler tests and benchmark on ARM64
+        run: |
+          test "$(uname -m)" = arm64
+          python ci/provider_benchmark.py
