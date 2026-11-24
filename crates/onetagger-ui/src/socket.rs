@@ -903,7 +903,8 @@ mod save_tests {
         let mut decoder = source.get_source().unwrap();
         for title in ["First edit", "Second edit"] {
             let value = json!({"action": "quickTagSave", "requestId": title, "changes": {
-                "path": path, "changes": [{"type": "raw", "tag": "TIT2", "value": [title]}],
+                "path": path, "changes": [{"type": "raw", "tag": "TIT2", "value": [title]},
+                    {"type": "raw", "tag": "TPE1", "value": ["Fixture artist"]}],
                 "separators": {"id3": ", ", "vorbis": null, "mp4": ", "}, "id3v24": true}});
             let Action::QuickTagSave { changes, request_id } = serde_json::from_value(value).unwrap() else { panic!() };
             let reply = quick_tag_save_response(&changes, request_id);
@@ -921,10 +922,13 @@ mod save_tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("locked.mp3");
         std::fs::write(&path, [0u8; 64]).unwrap();
+        let Action::QuickTagSave { changes, .. } = serde_json::from_value(json!({"action":"quickTagSave", "changes": {
+            "path":path, "changes":[{"type":"raw","tag":"TIT2","value":["Title"]},
+                {"type":"raw","tag":"TPE1","value":["Artist"]}],
+            "separators":{"id3":", ","vorbis":null,"mp4":", "},"id3v24":true}})).unwrap() else { panic!() };
         let original = std::fs::read(&path).unwrap();
         // Permit reading/copying, but simulate an external program denying deletion.
         let lock = std::fs::OpenOptions::new().read(true).share_mode(3).open(&path).unwrap();
-        let Action::TagEditorSave { changes, .. } = request(&path, None) else { panic!() };
         let reply = quick_tag_save_response(&changes, Some("locked-save".into()));
         assert_eq!(reply["status"], "error");
         assert_eq!(reply["requestId"], "locked-save");
