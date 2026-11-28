@@ -38,7 +38,7 @@ impl TagEditor {
 
     pub(crate) fn text_fields(tag: &Tag) -> HashMap<String, String> {
         tag.tag().all_tags().into_iter().map(|(key, values)| {
-            (key, values.join(",").replace('\0', ""))
+            (key, values.join(", ").replace('\0', ""))
         }).collect()
     }
 

@@ -8,7 +8,8 @@ use std::cmp::Ordering;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::time::Duration;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
+use onetagger_tag::TagDate;
 use regex::Regex;
 use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
@@ -313,6 +314,23 @@ pub struct Track {
 }
 
 impl Track {
+    // Keep partial dates in the existing provider metadata map to preserve the plugin ABI.
+    const RELEASE_MONTH: &'static str = "release_month";
+
+    pub fn set_release_month(&mut self, month: u8) {
+        self.custom.insert(Self::RELEASE_MONTH.into(), month.to_string());
+    }
+
+    pub fn release_tag_date(&self) -> Option<TagDate> {
+        if let Some(date) = self.release_date {
+            return Some(TagDate { year: date.year(), month: Some(date.month() as u8), day: Some(date.day() as u8) });
+        }
+        let year = self.release_year?;
+        let month = self.custom.get(Self::RELEASE_MONTH).and_then(|month| month.parse::<u8>().ok())
+            .filter(|month| (1..=12).contains(month));
+        Some(TagDate { year: year.into(), month, day: None })
+    }
+
     /// Get title with version
     pub fn full_title(&self) -> String {
         if let Some(v) = self.version.as_ref() {
@@ -335,6 +353,11 @@ impl Track {
 impl Track {
     /// Merge with other track
     pub fn merge(mut self, other: Track) -> Track {
+        if self.release_year.is_none() {
+            if let Some(month) = other.custom.get(Self::RELEASE_MONTH) {
+                self.custom.insert(Self::RELEASE_MONTH.into(), month.clone());
+            }
+        }
         /// Merge 2 arrays
         fn merge_array<T: PartialEq>(a: &mut Vec<T>, b: Vec<T>) {
             let x = b.into_iter().filter(|i| !a.contains(i)).collect::<Vec<_>>();
@@ -543,7 +566,7 @@ pub trait LyricsExt {
 
 /// Format LRC timestamp
 fn format_lrc_ts(ts: Duration) -> String {
-    format!("{:02}:{}{:.2}", ts.as_secs() / 60, if (ts.as_secs() % 60) < 10 { "0" } else { "" }, ts.as_secs_f32() % 60.0)
+    format!("{:02}:{:02}.{:02}", ts.as_secs() / 60, ts.as_secs() % 60, ts.subsec_millis() / 10)
 }
 
 impl LyricsExt for Lyrics {

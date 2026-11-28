@@ -147,8 +147,8 @@ pub trait TagImpl {
     fn get_raw(&self, tag: &str) -> Option<Vec<String>>;
     fn remove_raw(&mut self, tag: &str);
 
-    /// Set lyrics
-    fn set_lyrics(&mut self, lyrics: &Lyrics, synced: bool, overwrite: bool);
+    /// Set lyrics. Returns whether the requested lyric field is available after the edit.
+    fn set_lyrics(&mut self, lyrics: &Lyrics, synced: bool, overwrite: bool) -> bool;
 
     /// Set track number (because formats like MP3 and M4A use custom format)
     /// Track number is string because of platforms like discogs
@@ -290,7 +290,48 @@ pub struct TagDate {
 impl TagDate {
     // If has day and month
     pub fn has_md(&self) -> bool {
-        return self.month.is_some() && self.day.is_some();
+        self.month.is_some() && self.day.is_some()
+    }
+
+    /// Read a calendar date with year, month or day precision, optionally followed by a time.
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        let digits = |start: usize, end: usize| value.get(start..end)
+            .filter(|text| text.bytes().all(|byte| byte.is_ascii_digit()));
+        let year = digits(0, 4)?.parse().ok()?;
+        if value.len() == 4 {
+            return Some(Self { year, month: None, day: None });
+        }
+        let separator = *value.as_bytes().get(4)?;
+        if !matches!(separator, b'-' | b'/') {
+            return None;
+        }
+        let month: u8 = digits(5, 7)?.parse().ok()?;
+        chrono::NaiveDate::from_ymd_opt(year, month.into(), 1)?;
+        if value.len() == 7 {
+            return Some(Self { year, month: Some(month), day: None });
+        }
+        if value.as_bytes().get(7) != Some(&separator)
+            || !value.get(10..).is_some_and(|rest| rest.is_empty() || rest.starts_with(['T', ' ']))
+        {
+            return None;
+        }
+        let day: u8 = digits(8, 10)?.parse().ok()?;
+        chrono::NaiveDate::from_ymd_opt(year, month.into(), day.into())?;
+        Some(Self { year, month: Some(month), day: Some(day) })
+    }
+}
+
+impl std::fmt::Display for TagDate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:04}", self.year)?;
+        if let Some(month) = self.month {
+            write!(formatter, "-{month:02}")?;
+            if let Some(day) = self.day {
+                write!(formatter, "-{day:02}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -539,7 +580,7 @@ impl Lyrics {
 
     /// Are the lyrics synced?
     pub fn synced(&self) -> bool {
-        self.paragraphs.first().map(|p| p.first().map(|l| l.start.is_some())).flatten().unwrap_or(false)
+        self.iter_lines().any(|line| line.start.is_some())
     }
 
     /// Iterate over lines
@@ -635,5 +676,62 @@ mod commit_tests {
         fs::write(&path, corrupt).unwrap();
         assert!(changes(path.clone()).commit().is_err());
         assert_eq!(fs::read(path).unwrap(), corrupt);
+    }
+
+    #[test]
+    fn non_id3_lyrics_fill_replace_and_retain_across_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../onetagger-player/test-fixtures");
+        for (name, field) in [("tone.flac", "LYRICS"), ("tone.ogg", "LYRICS"), ("tone-aac.m4a", "©lyr")] {
+            let path = directory.path().join(name);
+            fs::copy(fixtures.join(name), &path).unwrap();
+            for (text, overwrite, expected) in [
+                ("First line", false, "First line"),
+                ("Ignored line", false, "First line"),
+                ("Replacement", true, "Replacement"),
+            ] {
+                let mut file = Tag::load_file(&path, true).unwrap();
+                let lyrics = Lyrics {
+                    language: "en".into(),
+                    paragraphs: vec![vec![LyricsLine {
+                        start: Some(Duration::from_secs(1)), end: None, text: text.into(), parts: vec![],
+                    }]],
+                };
+                let mut tag = file.tag_mut();
+                assert!(!tag.set_lyrics(&lyrics, true, true), "{name}");
+                assert!(tag.set_lyrics(&lyrics, false, overwrite), "{name}");
+                tag.save_file(&path).unwrap();
+                let saved = Tag::load_file(&path, true).unwrap();
+                assert_eq!(saved.tag().get_raw(field).unwrap(), [expected], "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn date_parsing_preserves_precision_and_validates_unicode_and_calendar_values() {
+        for (input, expected) in [
+            ("1981", "1981"), ("1981-12", "1981-12"), ("2024/02/29", "2024-02-29"),
+            ("2024-02-29T00:00:00+00:00", "2024-02-29"),
+        ] {
+            assert_eq!(TagDate::parse(input).unwrap().to_string(), expected);
+        }
+        for invalid in ["202é-08-09", "2023-02-29", "2024-13", "2024-02-31", "2024-02雪"] {
+            assert!(TagDate::parse(invalid).is_none(), "{invalid}");
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../onetagger-player/test-fixtures");
+        for (name, field) in [("tone.flac", "DATE"), ("tone.ogg", "DATE"), ("tone-alac.m4a", "©day")] {
+            let path = directory.path().join(name);
+            fs::copy(fixtures.join(name), &path).unwrap();
+            for value in ["2024-02", "2024-02-29", "202é-08-09"] {
+                let mut tags = Tag::load_file(&path, true).unwrap();
+                tags.tag_mut().set_raw(field, vec![value.into()], true);
+                tags.tag_mut().save_file(&path).unwrap();
+                assert_eq!(
+                    Tag::load_file(&path, true).unwrap().tag().get_date().map(|date| date.to_string()),
+                    TagDate::parse(value).map(|date| date.to_string()), "{name}: {value}"
+                );
+            }
+        }
     }
 }

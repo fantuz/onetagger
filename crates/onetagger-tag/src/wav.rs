@@ -181,7 +181,8 @@ pub(crate) fn write_wav(source: &Path, staged: &Path, tag: &Tag, version: Versio
         let text = if *frame == "COMM" {
             tag.comments().find(|comment| comment.description.is_empty()).map(|comment| comment.text.as_str())
         } else {
-            tag.get(frame).and_then(|frame| frame.content().text())
+            // INFO stores one string. Keep the full list in the ID3 chunk.
+            tag.get(frame).and_then(|frame| frame.content().text_values()?.next())
         }?;
         Some((id, text))
     }).collect();

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::time::{Duration, Instant};
 use onetagger_platforms::ProviderRateLimited;
+use onetagger_platforms::spotify::SpotifyQuotaExceeded;
 use std::default::Default;
 use std::io::prelude::*;
 use chrono::Local;
@@ -177,26 +178,13 @@ impl TrackFieldWriter for Track {
                 tag.set_field(Field::Style, self.styles.clone(), config.overwrite_tag(SupportedTag::Style));
             }
         }
-        // Release dates
-        if (self.release_date.is_some() || self.release_year.is_some()) && select(SupportedTag::ReleaseDate) {
-            if let Some(date) = self.release_date {
-                tag.set_date(&TagDate {
-                    year: date.year() as i32,
-                    month: match config.only_year {
-                        true => None,
-                        false => Some(date.month() as u8)
-                    },
-                    day: match config.only_year {
-                        true => None,
-                        false => Some(date.day() as u8)
-                    }
-                }, config.overwrite_tag(SupportedTag::ReleaseDate));
-            } else if let Some(year) = self.release_year {
-                tag.set_date(&TagDate {
-                    year: year as i32,
-                    month: None,
-                    day: None
-                }, config.overwrite_tag(SupportedTag::ReleaseDate));
+        if let Some(mut date) = self.release_tag_date() {
+            if select(SupportedTag::ReleaseDate) {
+                if config.only_year {
+                    date.month = None;
+                    date.day = None;
+                }
+                tag.set_date(&date, config.overwrite_tag(SupportedTag::ReleaseDate));
             }
         }
         // Publish date
@@ -280,12 +268,14 @@ impl TrackFieldWriter for Track {
                 }
             }
         }
-        // Lyrics
-        if self.lyrics.as_ref().is_some_and(|lyrics| lyrics.synced()) && select(SupportedTag::SyncedLyrics) {
-            tag.set_lyrics(self.lyrics.as_ref().unwrap(), true, config.overwrite_tag(SupportedTag::SyncedLyrics));
-        }
-        if self.lyrics.is_some() && select(SupportedTag::UnsyncedLyrics) {
-            tag.set_lyrics(self.lyrics.as_ref().unwrap(), false, config.overwrite_tag(SupportedTag::UnsyncedLyrics));
+        if let Some(lyrics) = &self.lyrics {
+            for (field, synced) in [(SupportedTag::SyncedLyrics, true), (SupportedTag::UnsyncedLyrics, false)] {
+                if config.tag_enabled(field) && (!synced || lyrics.synced())
+                    && tag.set_lyrics(lyrics, synced, config.overwrite_tag(field))
+                {
+                    select(field);
+                }
+            }
         }
         // Explicit
         if self.explicit.is_some() && select(SupportedTag::Explicit) {
@@ -332,22 +322,17 @@ impl TrackFieldWriter for Track {
             tag.set_raw("1T_TAGGEDDATE", vec![format!("{}_AT", time.format("%Y-%m-%d %H:%M:%S"))], true);
         }
 
-        // LRC
-        if config.write_lrc && self.lyrics.is_some() {
-            let path = path.as_ref().with_extension("lrc");
-            if !path.exists() {
-                if let Some(lrc) = self.lyrics.as_ref().unwrap().generate_lrc(Some(&self), config.enhanced_lrc) {
-                    info!("Writing LRC");
-                    match std::fs::write(&path, lrc) {
-                        Ok(_) => {}
-                        Err(e) => warn!("Failed writing .LRC file to {:?} {}", path, e),
-                    }
+        // Save
+        tag.save_file(&path.as_ref())?;
+
+        if config.write_lrc {
+            if let Some(lrc) = self.lyrics.as_ref().and_then(|lyrics| lyrics.generate_lrc(Some(self), config.enhanced_lrc)) {
+                let lrc_path = path.as_ref().with_extension("lrc");
+                if let Err(error) = save_lrc(&lrc_path, &lrc) {
+                    warn!("Failed writing lyrics to {lrc_path:?}: {error}");
                 }
             }
         }
-
-        // Save
-        tag.save_file(&path.as_ref())?;
 
         // Cover file
         if let Some(cover_data) = cover_data {
@@ -366,6 +351,20 @@ impl TrackFieldWriter for Track {
         }
 
         Ok(supplied)
+    }
+}
+
+fn save_lrc(path: &Path, lyrics: &str) -> std::io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let directory = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+    staged.write_all(lyrics.as_bytes())?;
+    match staged.persist_noclobber(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.error),
     }
 }
 
@@ -1237,6 +1236,10 @@ impl Tagger {
                     out.status = TaggingState::Deferred;
                     if limited.deferred() { out.lookup_ms = None; }
                     out.set_message(TaggingMessage::ProviderRateLimited(limited.retry_after_seconds()));
+                } else if let Some(quota) = e.downcast_ref::<SpotifyQuotaExceeded>() {
+                    out.status = TaggingState::Deferred;
+                    if quota.deferred { out.lookup_ms = None; }
+                    out.set_message(TaggingMessage::ProviderUnavailable(quota.to_string()));
                 } else {
                     out.set_message(TaggingMessage::TrackMatchFailed(e.to_string()));
                 }
@@ -1253,6 +1256,7 @@ impl Tagger {
             warn!("Failed extending track: {error}");
             out.set_message(match error.downcast_ref::<ProviderRateLimited>() {
                 Some(limited) => TaggingMessage::ProviderRateLimited(limited.retry_after_seconds()),
+                None if error.is::<SpotifyQuotaExceeded>() => TaggingMessage::ProviderUnavailable(error.to_string()),
                 None => TaggingMessage::ProviderDetailsUnavailable,
             });
         }
