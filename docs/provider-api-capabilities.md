@@ -102,3 +102,37 @@ For Beatport, Beatsource, Traxsource, Juno Download, Deezer's current public RES
 batch capabilities and BPM Supreme, no accessible primary bulk contract was
 established during this review. The adapter source is evidence of what OneTagger
 currently requests, not a guarantee about every API a provider operates.
+
+## Recording metadata for related-track software
+
+`onetagger-cli lookup --json` reads a single UTF-8 JSON object from standard input until EOF. Its default service is MusicBrainz. Pass `--provider itunes` or `--provider deezer` to send the same artist and full track title to that catalog instead. The command runs without an audio file, account or OneTagger profile. For example, from a POSIX shell:
+
+```sh
+printf '%s\n' '{"artist":"Kraftwerk","title":"Numbers"}' | onetagger-cli lookup --json
+```
+
+A successful request prints one JSON object. MusicBrainz keeps the original schema and default invocation. An empty MusicBrainz search looks like this.
+
+```json
+{"schema":1,"provider":"MusicBrainz","status":"no_match","candidates":[]}
+```
+
+- For MusicBrainz, `matched` means the complete search page identified one distinct recording with the same artist credit and title, and the recording detail confirmed both. Case and whitespace are normalized. Edition and remix wording count. Each candidate carries `recording_id`, `artist`, `title`, `genres`, `styles` and `label`. Genres come from positive votes on the recording itself. They can be empty. MusicBrainz's release-specific labels need a release identifier. This operation leaves `label` and `styles` empty.
+- `ambiguous` means more than one exact recording ID matched, or additional results existed beyond the retrieved page. A caller should skip enrichment in either case. The candidates list contains the exact IDs seen on this page. `no_match` means there was no exact match on a complete page, or the detail no longer agreed with the search index.
+- Requests allow up to 8 KiB of JSON. Artist and title each allow up to 512 UTF-8 bytes and must contain visible text. One recording search retrieves up to 25 entries. Only a unique match triggers a second HTTP request.
+- Submit lookups serially on the same network connection's public IP. The command waits before its first request and spaces its two GETs by at least one second. Concurrent clients share MusicBrainz's IP-wide quota. Exit status 3 signals a provider cooldown and prints the retry delay on stderr. Exit status 1 signals invalid input, a transport error or an invalid provider response. Exit status 2 denotes CLI usage errors. JSON results use exit status 0.
+
+[MusicBrainz recording search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search/RecordingSearch) · [MusicBrainz web service](https://musicbrainz.org/doc/MusicBrainz_API) · [Rate limits and identification](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
+
+### Apple iTunes and Deezer
+
+| CLI selector | Metadata returned on a unique match | Identity checks |
+| --- | --- | --- |
+| `--provider itunes` | The song’s primary genre in the US iTunes storefront | Distinct song and collection IDs, exact artist and full track title, fewer than 25 results on the page |
+| `--provider deezer` | Genres and record label on the matched track’s release, where available | Complete search page, exact artist and edition, matching track and album IDs confirmed from the track and album detail endpoints |
+
+These two services use schema 2. Each matched candidate carries the catalog’s own `track_id`, `release_id`, `artist`, `title`, `genres`, `genre_scope` and `label`. IDs are positive decimal strings. Apple uses `track` scope and an empty label. Deezer uses `release` scope. A release genre may describe a compilation more broadly than an individual track. Neither service supplies a style through this operation. An ambiguous search or an unconfirmed edition returns an empty candidates array. A successful identification can still have no usable tags.
+
+Each invocation queries one service. Callers can retain evidence separately by catalog and continue with another selected service after exit code 3. Submit lookups serially and respect cooldowns. MusicBrainz's recording IDs and the numeric identifiers from the two stores belong to different catalogs. The command never opens audio, artwork or previews. On a managed network using its own TLS issuer, the CLI can report an untrusted certificate even when a browser can reach the catalog. The terminal error includes the cause of a failed connection.
+
+[Apple iTunes Search API](https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/iTuneSearchAPI/) · [Deezer API](https://developers.deezer.com/api)

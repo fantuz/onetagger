@@ -6,7 +6,7 @@ use onetagger_ui::StartContext;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use convert_case::{Casing, Case};
 use onetagger_platforms::spotify::Spotify;
 use onetagger_renamer::{RenamerConfig, Renamer, TemplateParser};
@@ -49,13 +49,30 @@ fn main() {
         return;
     }
 
-    // Setup logging
-    onetagger_shared::setup();
-    info!("\n\nStarting OneTagger v{VERSION} Commit: {COMMIT} OS: {}\n\n", std::env::consts::OS);
-
+    // The JSON lookup runs without opening OneTagger's profile or creating an application log.
+    if !matches!(cli.action, Some(Actions::Lookup { .. })) {
+        onetagger_shared::setup();
+        info!("\n\nStarting OneTagger v{VERSION} Commit: {COMMIT} OS: {}\n\n", std::env::consts::OS);
+    }
 
     let action = cli.action.unwrap();
     match &action {
+        Actions::Lookup { provider, .. } => {
+            let (input, output) = (std::io::stdin().lock(), std::io::stdout().lock());
+            let result = match provider {
+                LookupProvider::Musicbrainz => onetagger_platforms::musicbrainz::lookup::run(input, output),
+                LookupProvider::Itunes => onetagger_platforms::itunes::lookup::run(input, output),
+                LookupProvider::Deezer => onetagger_platforms::deezer::lookup::run(input, output),
+            };
+            if let Err(error) = result {
+                if let Some(limit) = error.downcast_ref::<onetagger_platforms::ProviderRateLimited>() {
+                    eprintln!("Provider is busy. Retry after {} s.", limit.retry_after_seconds());
+                    std::process::exit(3);
+                }
+                eprintln!("Lookup failed: {error:#}");
+                std::process::exit(1);
+            }
+        }
         Actions::Autotagger { path, report, selection_manifest, .. } => {
             let config = action.get_at_config().expect("Failed loading config file!");
             debug!("{:?}", config);
@@ -199,8 +216,25 @@ struct Cli {
     audiofeatures_config: bool,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LookupProvider {
+    Musicbrainz,
+    Itunes,
+    Deezer,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 enum Actions {
+    /// Look up matching catalog metadata using only the artist and edition title on stdin
+    Lookup {
+        /// Read one JSON request and print one JSON result
+        #[clap(long, required = true)]
+        json: bool,
+        /// Service to contact. MusicBrainz preserves the original JSON recording protocol.
+        #[clap(long, value_enum, default_value = "musicbrainz")]
+        provider: LookupProvider,
+    },
+
     /// Start Autotagger in CLI mode
     Autotagger {
         /// Audio file, music directory or M3U playlist (overrides config)
@@ -484,6 +518,16 @@ impl Actions {
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    #[test]
+    fn lookup_accepts_only_its_json_interface() {
+        assert!(matches!(Cli::try_parse_from(["onetagger-cli", "lookup", "--json"]).unwrap().action,
+            Some(Actions::Lookup { json: true, provider: LookupProvider::Musicbrainz })));
+        assert!(matches!(Cli::try_parse_from(["onetagger-cli", "lookup", "--json", "--provider", "itunes"]).unwrap().action,
+            Some(Actions::Lookup { provider: LookupProvider::Itunes, .. })));
+        assert!(Cli::try_parse_from(["onetagger-cli", "lookup", "--json", "--provider", "unknown"]).is_err());
+        assert!(Cli::try_parse_from(["onetagger-cli", "lookup", "--json", "--path", "file.mp3"]).is_err());
+    }
 
     #[test]
     fn direct_audio_playlist_and_directory_resolve_the_expected_paths() {
