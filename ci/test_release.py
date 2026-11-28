@@ -134,11 +134,36 @@ class VersionTests(unittest.TestCase):
             with self.subTest(content=content), self.assertRaises(ValueError):
                 tools.release_notes(content, VERSION)
 
+    def test_stale_missing_or_ambiguous_homebrew_pin_blocks_checks_and_bumps(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "VERSION").write_text("1.7.0\n")
+            formula = root / "Formula/onetagger.rb"
+            formula.parent.mkdir()
+            url = '  url "https://github.com/fantuz/onetagger.git"'
+            valid = url + ', tag: "v1.7.0"'
+            for decl in [url, url + ', tag: "v1.6.0"', url + ', tag: "1.7.0"',
+                         url + ', tag: "v1.7.0-rc1"', valid.replace("fantuz/", "other/"),
+                         valid + "\n" + valid, "# " + valid]:
+                with self.subTest(decl=decl):
+                    formula.write_text(decl + "\n")
+                    with self.assertRaisesRegex(ValueError, "Formula/onetagger.rb"):
+                        tools.checked_version(root)
+                    with self.assertRaisesRegex(ValueError, "Formula/onetagger.rb"):
+                        tools.bump_version(VERSION, root)
+                    self.assertEqual(formula.read_text(), decl + "\n")
+                    self.assertEqual((root / "VERSION").read_text(), "1.7.0\n")
+
     def test_bump_synchronizes_versions_and_preserves_dependencies(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "VERSION").write_text("1.7.0\n")
             (root / "CHANGELOG.md").write_text("## Unreleased (fantuz fork)\n\n- Fix refresh.\n\n# 1.7.0\nHistorical notes\n")
+            formula = root / "Formula/onetagger.rb"
+            formula.parent.mkdir()
+            stable = "  url 'https://github.com/fantuz/onetagger.git', tag: 'v1.7.0' # stable"
+            resource = '  resource "extra" do\n    url "https://example.invalid/extra.git", tag: "v1.7.0"\n  end\n'
+            formula.write_text("class Onetagger < Formula\n" + stable + "\n" + resource + "end\n")
             for crate in tools.CRATES:
                 path = root / f"crates/{crate}/Cargo.toml"
                 path.parent.mkdir(parents=True)
@@ -151,6 +176,8 @@ class VersionTests(unittest.TestCase):
             (root / "Cargo.lock").write_text(lock + foreign)
             tools.bump_version(VERSION, root, "2026-11-16")
             self.assertEqual(tools.checked_version(root), VERSION)
+            self.assertIn(stable.replace("v1.7.0", "v1.7.1"), formula.read_text())
+            self.assertIn(resource, formula.read_text())
             self.assertIn(foreign, (root / "Cargo.lock").read_text())
             self.assertEqual(tools.release_notes((root / "CHANGELOG.md").read_text(), VERSION), "- Fix refresh.")
             self.assertIn("Historical notes", (root / "CHANGELOG.md").read_text())
