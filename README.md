@@ -21,11 +21,16 @@
   <a href="https://github.com/fantuz/onetagger/forks"><img src="https://img.shields.io/github/forks/fantuz/onetagger?style=flat" alt="GitHub forks" height="20"></a>
   <a href="https://github.com/fantuz/onetagger/commits/master"><img src="https://img.shields.io/github/last-commit/fantuz/onetagger/master" alt="Last commit on master" height="20"></a>
   <br>
-  <!-- Platforms and application components -->
-  <a href="#installing"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-507269" alt="Linux, Windows and macOS" height="20"></a>
+  <!-- Release package architectures -->
+  <a href="#installing"><img src="https://img.shields.io/badge/Windows-x64-0078d4" alt="Windows x64 packages" height="20"></a>
+  <a href="#installing"><img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20ARM64%20%7C%20Intel%20x86--64-333333" alt="macOS packages for Apple Silicon ARM64 and Intel x86-64" height="20"></a>
+  <a href="#installing"><img src="https://img.shields.io/badge/Linux-x86--64-6e5719" alt="Linux x86-64 packages" height="20"></a>
+  <br>
+  <!-- Application components and integration -->
   <a href="docs/DEVELOPMENT.md"><img src="https://img.shields.io/badge/core-Rust-555555?logo=rust" alt="Rust application core" height="20"></a>
   <a href="client/package.json"><img src="https://img.shields.io/badge/interface-Vue%20%2B%20Quasar-176d5e" alt="Vue and Quasar interface" height="20"></a>
   <a href="#installing"><img src="https://img.shields.io/badge/packages-desktop%20%2B%20CLI-2e7d32" alt="Desktop application and command-line packages" height="20"></a>
+  <a href="docs/ONETAGGER-RESULTS.md"><img src="https://img.shields.io/badge/Library%20Workbench-bridge-365aa2" alt="Library Workbench selection and results bridge" height="20"></a>
   <br>
   <!-- Contributions and support; this fork uses Discussions instead of Issues -->
   <a href="https://github.com/fantuz/onetagger/pulls"><img src="https://img.shields.io/github/issues-pr/fantuz/onetagger?label=pull%20requests" alt="Open pull requests" height="20"></a>
@@ -83,13 +88,36 @@ Download the [latest release](https://github.com/fantuz/onetagger/releases/lates
 | macOS Intel (x86-64) | [Application ZIP](https://github.com/fantuz/onetagger/releases/latest/download/OneTagger-macos-intel.zip) | [CLI ZIP](https://github.com/fantuz/onetagger/releases/latest/download/OneTagger-macos-intel-cli.zip) | [Checksums](https://github.com/fantuz/onetagger/releases/latest/download/SHA256SUMS-macos-intel.txt) |
 | Linux x64 (x86-64) | [Application tar.gz](https://github.com/fantuz/onetagger/releases/latest/download/OneTagger-linux-x64.tar.gz) | [CLI tar.gz](https://github.com/fantuz/onetagger/releases/latest/download/OneTagger-linux-x64-cli.tar.gz) | [Checksums](https://github.com/fantuz/onetagger/releases/latest/download/SHA256SUMS-linux-x64.txt) |
 
-Extract ZIP/tar.gz packages before use. Each release includes a `SHA256SUMS-*.txt` file for each platform. Checksums detect download corruption; they are not a publisher signature. Windows packages are not Authenticode signed. For macOS, choose the archive matching your processor, extract it, and move OneTagger.app to Applications. The release app bundles use ad-hoc signing. macOS may show a Gatekeeper warning when opening a browser-downloaded ZIP's app. Linux packages are built on Ubuntu 24.04 and require compatible glibc, ALSA and WebKitGTK 4.1 runtimes.
+Extract ZIP/tar.gz packages before use. Each release includes a `SHA256SUMS-*.txt` file for each platform. Windows packages are unsigned. Linux packages are built on Ubuntu 24.04 and require compatible glibc, ALSA and WebKitGTK 4.1 runtimes.
 
 The Windows installer checks for the Microsoft Edge WebView2 Runtime and runs
 the bootstrapper when it is missing. The portable Windows desktop executable
 needs WebView2 installed on the system.
 
+### First launch on macOS
+
+The desktop bundles use ad-hoc signing and ship without Apple notarization.
+Use the [official release](https://github.com/fantuz/onetagger/releases/latest)
+and compare the ZIP's SHA-256 digest with its entry in the matching checksum
+file. Choose Apple Silicon ARM64 or Intel x86-64, extract the ZIP in Finder,
+and move **OneTagger.app** to **Applications**.
+
+1. Try opening **OneTagger.app**. If macOS says the developer cannot be verified
+   or Apple cannot check the app for malicious software, dismiss the alert.
+2. Go to **System Settings → Privacy & Security**, scroll to **Security**, and
+   click **Open Anyway** for OneTagger.
+3. Confirm **Open** and authenticate if asked. macOS remembers the exception
+   for that app.
+
+Apple provides **Open Anyway** after the launch attempt. For a damaged-file or
+malware alert, check a fresh official download and consult Apple's guidance.
+[Apple's Open Anyway instructions](https://support.apple.com/en-us/102445#openanyway)
+
+### Linux desktop
+
 If the Linux native window freezes while browser mode works, launch `./onetagger --server --browser` to use the same local backend in your browser. This avoids the native WebKitGTK display path. Include your distribution, WebKitGTK version, GPU and Wayland/X11 session when reporting a native-window issue; browser success alone does not identify its exact cause.
+
+### Development downloads
 
 For newer development builds, use the [Build workflow on master](https://github.com/fantuz/onetagger/actions/workflows/build.yml?query=branch%3Amaster+event%3Apush): choose a successful run and open its **Artifacts** section. Download the `onetagger-` artifact matching your platform and extract its outer ZIP to access the packages and checksums. GitHub requires sign-in for workflow artifacts, which are retained for 14 days. The `frontend` artifact is an intermediate build output, not an installable application.
 

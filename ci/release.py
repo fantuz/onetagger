@@ -177,14 +177,20 @@ def plan_release(read, run_id, repository, branch, automatic=False):
 
 def release_body(plan, repository):
     base = f"https://github.com/{repository}/releases/download/{plan['tag']}/"
+    macos_help = f"https://github.com/{repository}/blob/{plan['tag']}/README.md#first-launch-on-macos"
     rows = []
     for platform, packages in PACKAGES.items():
         links = " · ".join(f"[{name}]({base}{name})" for name in sorted(packages))
         rows.append(f"| {platform} | {links} | [SHA-256]({base}SHA256SUMS-{platform}.txt) |")
     return (plan["marker"] + f"\n\n{plan['notes']}\n\n"
             "## Downloads\n\n| Platform | Packages | Checksums |\n| --- | --- | --- |\n" +
-            "\n".join(rows) + "\n\nWindows and macOS packages are unsigned. "
+            "\n".join(rows) + "\n\nWindows packages are unsigned. "
             "Linux packages require compatible glibc, ALSA and WebKitGTK 4.1 runtimes.\n\n"
+            "### First launch on macOS\n\n"
+            "The desktop app uses ad-hoc signing and ships without Apple notarization. "
+            "After verifying the ZIP, try opening OneTagger. If macOS reports that the developer cannot be verified, "
+            "dismiss the alert and choose **System Settings → Privacy & Security → Open Anyway**, then confirm **Open**. "
+            f"[First-launch instructions]({macos_help})\n\n"
             f"Source: [{plan['source']}](https://github.com/{repository}/commit/{plan['source']})\n\n"
             f"Validated build: https://github.com/{repository}/actions/runs/{plan['run_id']}\n")
 
