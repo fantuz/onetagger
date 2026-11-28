@@ -110,7 +110,7 @@ fn read_layout(file: &mut BufReader<File>) -> Result<WaveLayout, Error> {
 
 fn info_text(file: &mut BufReader<File>, chunk: &Chunk) -> Result<Option<String>, Error> {
     Ok(String::from_utf8(chunk.read_contents(file)?).ok().map(|mut text| {
-        text.truncate(text.trim_end_matches('\\0').len());
+        text.truncate(text.trim_end_matches('\0').len());
         text
     }))
 }
