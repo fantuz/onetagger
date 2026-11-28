@@ -69,7 +69,7 @@ fn main() {
                     eprintln!("Provider is busy. Retry after {} s.", limit.retry_after_seconds());
                     std::process::exit(3);
                 }
-                eprintln!("Lookup failed: {error}");
+                eprintln!("Lookup failed: {error:#}");
                 std::process::exit(1);
             }
         }
