@@ -11,6 +11,10 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 CRATES = ("onetagger", "onetagger-cli", "onetagger-shared")
+FORMULA = Path("Formula/onetagger.rb")
+FORMULA_URL = re.compile(r"^  url\b[^\n]*$", re.MULTILINE)
+STABLE_SOURCE = re.compile(r"""  url[ \t]+(["'])https://github\.com/fantuz/onetagger\.git\1[ \t]*,[ \t]*"""
+                           r"""tag:[ \t]*(["'])v(?P<version>[^"']+)\2[ \t]*(?:\#.*)?""")
 PACKAGES = {
     "linux-x64": {"OneTagger-linux-x64.tar.gz", "OneTagger-linux-x64-cli.tar.gz"},
     "windows-x64": {"OneTagger-windows.exe", "OneTagger-windows-cli.exe", "OneTagger-windows-setup.exe"},
@@ -30,9 +34,20 @@ def version_key(value):
     return parts
 
 
+def formula_pin(formula, version):
+    # Match the formula's own stable source. Resource blocks can pin different versions.
+    sources = list(FORMULA_URL.finditer(formula))
+    if len(sources) == 1:
+        pin = STABLE_SOURCE.fullmatch(formula, *sources[0].span())
+        if pin and pin["version"] == version:
+            return pin.span("version")
+    raise ValueError(f"{FORMULA.as_posix()} must have one stable Git source pinned to v{version}")
+
+
 def checked_version(root=ROOT):
     version = (root / "VERSION").read_text(encoding="utf-8").strip()
     version_key(version)
+    formula_pin((root / FORMULA).read_text(encoding="utf-8"), version)
     for crate in CRATES:
         package = tomllib.loads((root / f"crates/{crate}/Cargo.toml").read_text(encoding="utf-8"))["package"]
         if package["version"] != version:
@@ -63,7 +78,10 @@ def bump_version(version, root=ROOT, today=None):
     old = checked_version(root)
     if version_key(version) <= version_key(old):
         raise ValueError("The new version must increase")
-    changes = {}
+    formula_path = root / FORMULA
+    formula = formula_path.read_text(encoding="utf-8")
+    start, end = formula_pin(formula, old)
+    changes = {formula_path: formula[:start] + version + formula[end:]}
     for crate in CRATES:
         path = root / f"crates/{crate}/Cargo.toml"
         content, count = re.subn(r'(?m)^version = "' + re.escape(old) + r'"$',
