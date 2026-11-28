@@ -8,6 +8,8 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use onetagger_tagger::{Track, AutotaggerSource, AudioFileInfo, TaggerConfig, MatchingUtils, TrackNumber, AutotaggerSourceBuilder, PlatformInfo, supported_tags, TrackMatch};
 
+pub mod lookup;
+
 static COOLDOWN: ProviderCooldown = ProviderCooldown::new();
 static PACER: RequestPacer = RequestPacer::new();
 
@@ -17,11 +19,14 @@ pub struct MusicBrainz {
     release_cache: RequestCache<String, Release>,
 }
 
+fn client_builder() -> reqwest::blocking::ClientBuilder {
+    Client::builder().user_agent(format!("OneTagger/{} (+https://github.com/fantuz/onetagger)", onetagger_shared::VERSION))
+}
+
 impl MusicBrainz {
     pub fn new() -> MusicBrainz {
         MusicBrainz {
-            client: Client::builder()
-                .user_agent(format!("OneTagger/{} (+https://github.com/fantuz/onetagger)", onetagger_shared::VERSION))
+            client: client_builder()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .unwrap(),
@@ -32,17 +37,21 @@ impl MusicBrainz {
 
     /// Make GET request to MusicBrainz, rate limit inlcuded
     fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T, Error> {
+        Ok(Self::response(&self.client, self.slowdown, path, query)?.json()?)
+    }
+
+    fn response(client: &Client, slowdown: u16, path: &str, query: &[(&str, &str)]) -> Result<reqwest::blocking::Response, Error> {
         COOLDOWN.check()?;
         let mut new_query = query.to_owned();
         new_query.push(("fmt", "json"));
         debug!("MusicBrainz GET: {} {:?}", path, new_query);
-        PACER.wait_scaled(Duration::from_secs(1), self.slowdown);
+        PACER.wait_scaled(Duration::from_secs(1), slowdown);
         COOLDOWN.check()?;
-        let response = self.client.get(&format!("https://musicbrainz.org/ws/2{}", path))
+        let response = client.get(&format!("https://musicbrainz.org/ws/2{}", path))
             .query(&new_query)
             .send()?;
         COOLDOWN.check_response(&response, Duration::from_secs(15))?;
-        Ok(response.error_for_status()?.json()?)
+        Ok(response.error_for_status()?)
     }
 
     fn release(&self, id: &str) -> Result<Release, Error> {

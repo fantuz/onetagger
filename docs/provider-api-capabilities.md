@@ -102,3 +102,24 @@ For Beatport, Beatsource, Traxsource, Juno Download, Deezer's current public RES
 batch capabilities and BPM Supreme, no accessible primary bulk contract was
 established during this review. The adapter source is evidence of what OneTagger
 currently requests, not a guarantee about every API a provider operates.
+
+## Recording metadata for related-track software
+
+`onetagger-cli lookup --json` reads a single UTF-8 JSON object from standard input until EOF. It sends the artist credit and full track title to MusicBrainz. The command runs without an audio file, account or OneTagger profile. For example, from a POSIX shell:
+
+```sh
+printf '%s\n' '{"artist":"Kraftwerk","title":"Numbers"}' | onetagger-cli lookup --json
+```
+
+A successful request prints one JSON object. The following example shows its shape for an empty search result.
+
+```json
+{"schema":1,"provider":"MusicBrainz","status":"no_match","candidates":[]}
+```
+
+- `matched` means the complete search page identified one distinct recording with the same artist credit and title, and the recording detail confirmed both. Case and whitespace are normalized. Edition and remix wording count. Each candidate carries `recording_id`, `artist`, `title`, `genres`, `styles` and `label`. Genres come from positive votes on the recording itself. They can be empty. MusicBrainz's release-specific labels need a release identifier. This operation leaves `label` and `styles` empty.
+- `ambiguous` means more than one exact recording ID matched, or additional results existed beyond the retrieved page. A caller should skip enrichment in either case. The candidates list contains the exact IDs seen on this page. `no_match` means there was no exact match on a complete page, or the detail no longer agreed with the search index.
+- Requests allow up to 8 KiB of JSON. Artist and title each allow up to 512 UTF-8 bytes and must contain visible text. One recording search retrieves up to 25 entries. Only a unique match triggers a second HTTP request.
+- Submit lookups serially on the same network connection's public IP. The command waits before its first request and spaces its two GETs by at least one second. Concurrent clients share MusicBrainz's IP-wide quota. Exit status 3 signals a provider cooldown and prints the retry delay on stderr. Exit status 1 signals invalid input, a transport error or an invalid provider response. Exit status 2 denotes CLI usage errors. JSON results use exit status 0.
+
+[MusicBrainz recording search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search/RecordingSearch) · [MusicBrainz web service](https://musicbrainz.org/doc/MusicBrainz_API) · [Rate limits and identification](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)

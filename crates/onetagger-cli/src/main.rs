@@ -49,13 +49,24 @@ fn main() {
         return;
     }
 
-    // Setup logging
-    onetagger_shared::setup();
-    info!("\n\nStarting OneTagger v{VERSION} Commit: {COMMIT} OS: {}\n\n", std::env::consts::OS);
-
+    // The JSON lookup runs without opening OneTagger's profile or creating an application log.
+    if !matches!(cli.action, Some(Actions::Lookup { .. })) {
+        onetagger_shared::setup();
+        info!("\n\nStarting OneTagger v{VERSION} Commit: {COMMIT} OS: {}\n\n", std::env::consts::OS);
+    }
 
     let action = cli.action.unwrap();
     match &action {
+        Actions::Lookup { .. } => {
+            if let Err(error) = onetagger_platforms::musicbrainz::lookup::run(std::io::stdin().lock(), std::io::stdout().lock()) {
+                if let Some(limit) = error.downcast_ref::<onetagger_platforms::ProviderRateLimited>() {
+                    eprintln!("MusicBrainz is busy. Retry after {} s.", limit.retry_after_seconds());
+                    std::process::exit(3);
+                }
+                eprintln!("Lookup failed: {error}");
+                std::process::exit(1);
+            }
+        }
         Actions::Autotagger { path, report, selection_manifest, .. } => {
             let config = action.get_at_config().expect("Failed loading config file!");
             debug!("{:?}", config);
@@ -201,6 +212,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Actions {
+    /// Look up a recording on MusicBrainz using only the artist and title on stdin
+    Lookup {
+        /// Read one JSON request and print one JSON result
+        #[clap(long, required = true)]
+        json: bool,
+    },
+
     /// Start Autotagger in CLI mode
     Autotagger {
         /// Audio file, music directory or M3U playlist (overrides config)
@@ -484,6 +502,13 @@ impl Actions {
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    #[test]
+    fn lookup_accepts_only_its_json_interface() {
+        assert!(matches!(Cli::try_parse_from(["onetagger-cli", "lookup", "--json"]).unwrap().action,
+            Some(Actions::Lookup { json: true })));
+        assert!(Cli::try_parse_from(["onetagger-cli", "lookup", "--json", "--path", "file.mp3"]).is_err());
+    }
 
     #[test]
     fn direct_audio_playlist_and_directory_resolve_the_expected_paths() {
