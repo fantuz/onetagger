@@ -8,6 +8,7 @@
 - Read WAV comments as structured ID3 comments, so a legacy RIFF comment can be saved in ID3v2.3 or ID3v2.4. The version switch follows the selected file. Change it and save to convert an MP3, WAV or AIFF tag.
 - Edit native ID3v2.4 artists, genres and other text lists one value at a time. Commas within a value stay part of that value.
 - Read valid year, month and full-date tags from supported formats. Carry the available date precision into ID3 upgrades and preserve compatible legacy date fields when converting to ID3v2.3.
+- Keep each date from its first selected Manual Tag match. Use the available month when sorting provider results by release date.
 
 ### Lyrics, playback and providers
 

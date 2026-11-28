@@ -352,11 +352,19 @@ impl Track {
 
 impl Track {
     /// Merge with other track
-    pub fn merge(mut self, other: Track) -> Track {
-        if self.release_year.is_none() {
-            if let Some(month) = other.custom.get(Self::RELEASE_MONTH) {
-                self.custom.insert(Self::RELEASE_MONTH.into(), month.clone());
+    pub fn merge(mut self, mut other: Track) -> Track {
+        // Keep each date and its precision from the same selected release.
+        if self.release_date.is_none() && self.release_year.is_none() {
+            self.release_date = other.release_date;
+            self.release_year = other.release_year;
+            self.custom.remove(Self::RELEASE_MONTH);
+            if let Some(month) = other.custom.remove(Self::RELEASE_MONTH) {
+                self.custom.insert(Self::RELEASE_MONTH.into(), month);
             }
+        }
+        if self.publish_date.is_none() && self.publish_year.is_none() {
+            self.publish_date = other.publish_date;
+            self.publish_year = other.publish_year;
         }
         /// Merge 2 arrays
         fn merge_array<T: PartialEq>(a: &mut Vec<T>, b: Vec<T>) {
@@ -371,8 +379,7 @@ impl Track {
             }
         }
         gen_track_merge_option!(version, album, key, bpm, art, label, catalog_number, track_number, 
-                track_total, disc_number, isrc, mood, explicit, lyrics, release_date, release_year, 
-                publish_date, publish_year, thumbnail);
+                track_total, disc_number, isrc, mood, explicit, lyrics, thumbnail);
 
         // Generate merge_array(&mut self.value, other.value)
         macro_rules! gen_track_merge_array {
@@ -1153,9 +1160,8 @@ impl MatchingUtils {
     }
 
     pub fn sort_tracks(tracks: &mut [TrackMatch], config: &TaggerConfig) {
-        use chrono::Datelike;
-        let date = |t: &Track| t.release_date.map(|d| (d.year(), Some(d)))
-            .or_else(|| t.release_year.map(|y| (i32::from(y), None)));
+        let date = |track: &Track| track.release_tag_date()
+            .map(|date| (date.year, date.month, date.day));
         tracks.sort_by(|a, b| {
             let order = match (&config.multiple_matches, date(&a.track), date(&b.track)) {
                 (MultipleMatchesSort::Default, _, _) => Ordering::Equal,
@@ -1237,6 +1243,41 @@ mod duration_regression_tests {
             MatchingUtils::sort_tracks(&mut tracks, &TaggerConfig { multiple_matches: preference, ..Default::default() });
             assert_eq!(tracks[0].track.release_year, Some(expect));
             assert_eq!(tracks[2].track.release_year, None);
+        }
+    }
+
+    #[test]
+    fn manual_merge_preserves_dates_from_the_first_match_with_each_date() {
+        let mut partial = Track {
+            release_year: Some(2001), publish_year: Some(1999), ..Default::default()
+        };
+        partial.set_release_month(9);
+        let full = Track {
+            release_date: NaiveDate::from_ymd_opt(2004, 2, 29),
+            publish_date: NaiveDate::from_ymd_opt(2002, 9, 21),
+            ..Default::default()
+        };
+
+        let merged = Track::default().merge(partial.clone()).merge(full.clone());
+        assert_eq!(merged.release_tag_date().unwrap().to_string(), "2001-09");
+        assert_eq!(merged.publish_year, Some(1999));
+        assert_eq!(merged.publish_date, None);
+
+        let merged = full.clone().merge(partial);
+        assert_eq!(merged.release_tag_date().unwrap().to_string(), "2004-02-29");
+        assert_eq!(merged.publish_date, full.publish_date);
+        assert_eq!(merged.publish_year, None);
+    }
+
+    #[test]
+    fn date_preferences_use_the_available_month_when_ranking_editions() {
+        let mut september = Track { release_year: Some(2020), ..Default::default() };
+        september.set_release_month(9);
+        let may = Track { release_date: NaiveDate::from_ymd_opt(2020, 5, 14), ..Default::default() };
+        let mut tracks = [TrackMatch::new(1.0, september), TrackMatch::new(1.0, may)];
+        for (preference, month) in [(MultipleMatchesSort::Oldest, 5), (MultipleMatchesSort::Newest, 9)] {
+            MatchingUtils::sort_tracks(&mut tracks, &TaggerConfig { multiple_matches: preference, ..Default::default() });
+            assert_eq!(tracks[0].track.release_tag_date().unwrap().month, Some(month));
         }
     }
 
