@@ -15,6 +15,7 @@ pub mod deezer;
 pub mod musixmatch;
 pub mod bandcamp;
 mod bandcamp_genres;
+mod catalog_lookup;
 mod cooldown;
 mod request_cache;
 mod request_pacer;

@@ -1,3 +1,5 @@
+pub mod lookup;
+
 use crate::request_policy::{PacedRequest, ProviderRequests};
 use crate::cooldown::{retry_delay, ProviderCooldown};
 use crate::request_cache::RequestCache;
@@ -139,8 +141,8 @@ impl AutotaggerSource for Deezer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum DeezerResponse<D> {
-    Ok(D),
-    Error { error: DeezerError }
+    Error { error: DeezerError },
+    Ok(D)
 }
 
 impl<D> DeezerResponse<D> {
@@ -164,8 +166,9 @@ impl<D> DeezerResponse<D> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DeezerError {
     pub code: i32, 
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub error_type: String,
+    #[serde(default)]
     pub message: String
 }
 

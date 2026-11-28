@@ -1,3 +1,5 @@
+pub mod lookup;
+
 use anyhow::Error;
 use crate::cooldown::ProviderCooldown;
 use crate::request_pacer::RequestPacer;
@@ -17,12 +19,15 @@ pub struct ITunes {
     pub rate_limit: i16,
 }
 
+fn client_builder() -> reqwest::blocking::ClientBuilder {
+    Client::builder().user_agent("OneTagger/1.0")
+}
+
 impl ITunes {
     /// Create new instance
     pub fn new() -> ITunes {
         ITunes {
-            client: Client::builder()
-                .user_agent("OneTagger/1.0")
+            client: client_builder()
                 .build()
                 .unwrap(),
             slowdown: 2,
@@ -32,7 +37,7 @@ impl ITunes {
 
     /// Make get request to API
     fn get(&mut self, path: &str, query: &[(&str, &str)]) -> Result<Response, Error> {
-        debug!("iTunes GET: {} {:?}", path, query);
+        debug!("iTunes GET: {}", path);
         COOLDOWN.check()?;
         PACER.wait_per_minute(self.rate_limit.clamp(1, 20) as u16, self.slowdown);
         COOLDOWN.check()?;
@@ -40,9 +45,9 @@ impl ITunes {
         // Do request
         let res = self.client.get(&format!("https://itunes.apple.com{}", path))
             .query(query)
-            .send()?;
+            .send().map_err(reqwest::Error::without_url)?;
         COOLDOWN.check_response(&res, Duration::from_secs(60))?;
-        Ok(res.error_for_status()?)
+        Ok(res.error_for_status().map_err(reqwest::Error::without_url)?)
     }
 
     /// Search the iTunes API

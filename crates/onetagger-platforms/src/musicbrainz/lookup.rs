@@ -1,33 +1,13 @@
 //! Read-only MusicBrainz recording lookup used by the CLI's JSON protocol.
 use super::{client_builder, MusicBrainz};
+use crate::catalog_lookup::{self, identity as normalize, valid_text as valid_field, Request};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-const INPUT_BYTES: usize = 8192;
-const RESPONSE_BYTES: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 25;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    artist: String,
-    title: String,
-}
-
-fn valid_field(value: &str) -> bool {
-    !value.trim().is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
-}
-
-fn normalize(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
 
 fn literal(value: &str) -> String {
     // Each value is one Lucene phrase. Escape its delimiter and escape character.
@@ -35,13 +15,6 @@ fn literal(value: &str) -> String {
         "\"{}\"",
         value.trim().replace('\\', "\\\\").replace('"', "\\\"")
     )
-}
-
-fn read_limited(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= limit, "JSON exceeds {limit} bytes");
-    Ok(bytes)
 }
 
 #[derive(Deserialize)]
@@ -225,8 +198,7 @@ fn lookup(
 
 /// Accepts one bounded request and writes one response. Provider failures leave stdout empty.
 pub fn run(input: impl Read, mut output: impl Write) -> Result<()> {
-    let request: Request = serde_json::from_slice(&read_limited(input, INPUT_BYTES)?)
-        .context("Expected a JSON object with artist and title")?;
+    let request = catalog_lookup::request(input)?;
     let client = client_builder()
         .timeout(Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::none())
@@ -251,7 +223,7 @@ pub fn run(input: impl Read, mut output: impl Write) -> Result<()> {
             "MusicBrainz returned {}",
             response.status()
         );
-        read_limited(response, RESPONSE_BYTES)
+        catalog_lookup::read_response(response)
     })?;
     serde_json::to_writer(&mut output, &report)?;
     writeln!(output)?;
@@ -356,8 +328,8 @@ mod tests {
 
     #[test]
     fn input_limits_and_query_escaping_precede_provider_requests() {
-        assert!(read_limited(&b"12345"[..], 4).is_err());
-        assert!(read_limited(&b"1234"[..], 4).is_ok());
+        assert!(catalog_lookup::read_limited(&b"12345"[..], 4).is_err());
+        assert!(catalog_lookup::read_limited(&b"1234"[..], 4).is_ok());
         for invalid in ["", "  ", "\nprivate", &"a".repeat(513)] {
             assert!(lookup(
                 Request {
