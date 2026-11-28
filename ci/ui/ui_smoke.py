@@ -147,6 +147,8 @@ class Backend:
                 track["format"] = track["filename"].rsplit(".", 1)[-1]
                 if track["format"] == "wav":
                     track["id3"]["id3v24"] = True
+                    track["id3"]["text_values"] = {"TPE1": ["Artist, Jr.", "Second Artist"]}
+                    track["tags"]["TPE1"] = "Artist, Jr., Second Artist"
                 elif track["format"] == "flac":
                     track["id3"] = None
                 response = {"action": action, "data": track}
@@ -803,6 +805,21 @@ class BrowserTests(unittest.TestCase):
             self.select_other_track(page)
             expect(page.locator(".text-center.monospace")).to_have_text("Another track.flac")
             expect(version).to_have_count(0)
+
+    def test_native_id3_artist_values_are_editable_without_splitting_commas(self):
+        with self.session() as (page, backend):
+            self.open_editor(page)
+            page.locator("#fileList").get_by_text("Modern track.wav", exact=True).click()
+            expect(page.get_by_label("Tag TPE1 1", exact=True)).to_have_value("Artist, Jr.")
+            second = page.get_by_label("Tag TPE1 2", exact=True)
+            expect(second).to_have_value("Second Artist")
+            second.fill("Edited Artist")
+            second.press("Tab")
+            page.get_by_role("button", name="Save", exact=True).click()
+            expect(page.get_by_text("Tags written!", exact=True)).to_be_visible()
+            self.assertEqual(backend.saves()[-1]["changes"], [
+                {"type": "id3TextValues", "tag": "TPE1", "value": ["Artist, Jr.", "Edited Artist"]},
+            ])
 
     def test_failed_save_retains_edits_and_retry_resends_original_changes(self):
         with self.session() as (page, backend):

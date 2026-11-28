@@ -47,6 +47,11 @@ pub struct ID3Tag {
 
 const ONETAGGER_RATING_OWNER: &str = "no@email";
 
+fn is_text_list_frame(id: &str) -> bool {
+    id.len() == 4 && id.starts_with('T') && !matches!(id, "TXXX" | "TRCK" | "TPOS")
+        && id.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
 impl ID3Tag {
     // Read from file
     pub fn load_file(path: impl AsRef<Path>) -> Result<ID3Tag, Error> {
@@ -108,6 +113,34 @@ impl ID3Tag {
 
     pub fn has_id3v24_on_disk(&self) -> bool {
         self.version_on_disk == Some(Version::Id3v24)
+    }
+
+    pub fn native_text_values(&self) -> HashMap<String, Vec<String>> {
+        let mut values = HashMap::new();
+        if self.has_id3v24_on_disk() {
+            for frame in self.tag.frames() {
+                let id = frame.id();
+                if !is_text_list_frame(id) {
+                    continue;
+                }
+                if let Some(text) = frame.content().text().filter(|text| text.contains('\0')) {
+                    values.entry(id.to_owned()).or_insert_with(|| text.split('\0').map(String::from).collect());
+                }
+            }
+        }
+        values
+    }
+
+    pub(crate) fn set_native_text_values(&mut self, id: &str, values: Vec<String>) -> Result<(), Error> {
+        anyhow::ensure!(is_text_list_frame(id),
+            "Expected an ID3 text frame that accepts multiple values");
+        anyhow::ensure!(values.iter().all(|value| !value.contains('\0')), "An ID3 text value contains a NUL character");
+        let values: Vec<_> = values.into_iter().filter(|value| !value.is_empty()).collect();
+        self.tag.remove(id);
+        if !values.is_empty() {
+            self.tag.set_text_values(id, values);
+        }
+        Ok(())
     }
 
     fn upgrade_legacy_recording_date(&mut self) {
@@ -549,7 +582,9 @@ impl TagImpl for ID3Tag {
                 }
                 // In ID3v2.2/3 strings are NULL terminated, so they can't contain null bytes.
                 // Because of that the ID3 library replaces \0 with / and then back
-                if (self.tag.version() == Version::Id3v22 || self.tag.version() == Version::Id3v23) && content.contains("\0") {
+                if matches!(self.version_on_disk.unwrap_or(self.tag.version()), Version::Id3v22 | Version::Id3v23)
+                    && content.contains("\0")
+                {
                     return Some(content.replace("\0", "/").split(&self.id3_separator).map(String::from).collect());
                 }
                 Some(content.split(&self.id3_separator).map(String::from).collect())

@@ -458,6 +458,10 @@ pub enum TagChange {
     AddPictureBase64 { kind: CoverType, description: String, data: String, mime: String },
 
     #[cfg(feature = "tag")]
+    #[serde(rename = "id3TextValues")]
+    ID3TextValues { tag: String, value: Vec<String> },
+
+    #[cfg(feature = "tag")]
     #[serde(rename = "id3Comments")]
     ID3Comments { comments: Vec<id3::ID3Comment> },
 
@@ -501,6 +505,7 @@ impl TagChanges {
 
             for change in self.changes.clone() {
                 match change {
+                    TagChange::ID3TextValues { tag, value } => id3.set_native_text_values(&tag, value)?,
                     TagChange::ID3Comments {comments} => id3.set_comments(&comments),
                     TagChange::ID3UnsynchronizedLyrics {lyrics} => id3.set_unsync_lyrics(&lyrics),
                     TagChange::ID3Popularimeter {popm} => id3.set_popularimeter(&popm),
@@ -663,6 +668,23 @@ mod commit_tests {
         assert!(Tag::load_file(&path, true).is_ok());
         changes(path.clone()).commit().unwrap();
         assert_eq!(Tag::load_file(&path, false).unwrap().tag().get_field(Field::Title).unwrap(), vec!["First title"]);
+        assert!(fs::read(path).unwrap().ends_with(&audio));
+    }
+
+    #[test]
+    fn editor_round_trips_native_id3_values_with_literal_punctuation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artists.mp3");
+        let audio = [0x7fu8; 64];
+        fs::write(&path, audio).unwrap();
+        let artists = vec!["Artist, Jr.".to_owned(), "Second Artist".to_owned()];
+        let mut edit = changes(path.clone());
+        edit.changes = vec![TagChange::ID3TextValues { tag: "TPE1".into(), value: artists.clone() }];
+        edit.commit().unwrap();
+        changes(path.clone()).commit().unwrap();
+        let reopened = id3::ID3Tag::load_file(&path).unwrap();
+        assert_eq!(reopened.get_field(Field::Artist).unwrap(), artists);
+        assert_eq!(reopened.native_text_values()["TPE1"], artists);
         assert!(fs::read(path).unwrap().ends_with(&audio));
     }
 

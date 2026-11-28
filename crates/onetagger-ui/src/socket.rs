@@ -254,8 +254,14 @@ fn tag_editor_save_response(changes: &TagChanges, request_id: Option<String>) ->
     let result = changes.commit();
     crate::library::invalidate(&changes.path);
     match result {
-        Ok(tag) => json!({ "action": "tagEditorSave", "status": "ok",
-            "requestId": request_id, "path": changes.path, "tags": TagEditor::text_fields(&tag) }),
+        Ok(tag) => {
+            let id3_text_values = match &tag {
+                Tag::ID3(id3) => Some(id3.native_text_values()),
+                _ => None,
+            };
+            json!({ "action": "tagEditorSave", "status": "ok", "requestId": request_id,
+                "path": changes.path, "tags": TagEditor::text_fields(&tag), "id3TextValues": id3_text_values })
+        }
         Err(error) => {
             warn!("Tag editor save failed: {error:#}");
             localized(json!({ "action": if request_id.is_some() { "tagEditorSave" } else { "error" },

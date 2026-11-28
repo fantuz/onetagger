@@ -66,6 +66,12 @@ Tag edits write to your audio files; retain backups and try a small selection be
 
 MP3, AIFF, WAV, FLAC, M4A (AAC, ALAC), and supported Ogg-family formats are handled by the tagging backend.
 
+Edit Tags displays the ID3 version saved in each MP3, WAV or AIFF file. Change
+the version and save to convert the tag. ID3v2.4 artist and genre values can be
+edited individually. Auto Tag can embed plain lyrics in ID3, FLAC, Ogg and M4A.
+Timed lyrics can be embedded in ID3 and exported as an optional LRC file.
+See [playback formats and libopus terms](docs/library-performance.md#audio-playback-and-seeking).
+
 ## Installing
 
 Download the [latest release](https://github.com/fantuz/onetagger/releases/latest) for your computer. Published packages and checksums are available without signing in to GitHub and do not expire like workflow artifacts.

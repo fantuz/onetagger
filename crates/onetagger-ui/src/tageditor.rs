@@ -88,6 +88,7 @@ pub struct TagEditorImage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ID3Binary {
     pub id3v24: bool,
+    pub text_values: HashMap<String, Vec<String>>,
     pub comments: Vec<ID3Comment>,
     pub unsync_lyrics: Vec<ID3Comment>,
     pub popularimeter: Option<ID3Popularimeter>
@@ -98,6 +99,7 @@ impl ID3Binary {
         match tag {
             Tag::ID3(t) => Some(ID3Binary {
                 id3v24: t.has_id3v24_on_disk(),
+                text_values: t.native_text_values(),
                 comments: t.get_comments(),
                 unsync_lyrics: t.get_unsync_lyrics(),
                 popularimeter: t.get_popularimeter()
