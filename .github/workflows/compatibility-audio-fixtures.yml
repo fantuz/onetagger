@@ -1,0 +1,32 @@
+name: Generate compatibility fixtures
+on:
+  push:
+    branches: [codex/compatibility-audio-fixtures]
+permissions:
+  contents: read
+jobs:
+  fixtures:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Ensure FFmpeg is available
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+      - name: Generate synthetic Opus and Speex audio
+        run: |
+          ffmpeg -version | head -n 1
+          ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=440:sample_rate=44100:duration=2 -ac 2 -map_metadata -1 -c:a libopus -b:a 32k tone.opus
+          ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=440:sample_rate=44100:duration=2 -ac 1 -ar 16000 -map_metadata -1 -c:a libspeex tone.spx
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          from pathlib import Path
+          for path in (Path("tone.opus"), Path("tone.spx")):
+              data = path.read_bytes()
+              print("AUDIO", path.name, len(data), hashlib.sha256(data).hexdigest())
+              encoded = base64.b64encode(data).decode()
+              for start in range(0, len(encoded), 140):
+                  print("BYTES", path.name, encoded[start:start+140])
+          PY
