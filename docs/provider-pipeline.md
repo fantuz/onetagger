@@ -25,8 +25,9 @@ and needs overwrite permission for Genre to save that union to a populated field
 The **Needs another lookup** filter groups partial saves and deferred lookups. A file leaves the filter when a later provider completes it. Each provider's status tooltip explains its warning. Reports record each attempt, its retry delay when supplied, and the file's before and after values. For Workbench v1/v2 compatibility, a partial save has status `written` and outcome `partial`. A deferred attempt has status `skipped` and outcome `deferred`.
 
 **Manual Tag** searches the chosen providers concurrently. It merges the results
-you select in their selection order. Separate editions remain distinct when their recording IDs coincide. Scalar fields use the first present value,
-and array fields combine their entries.
+you select in their selection order. Separate editions remain distinct when their recording IDs coincide.
+Scalar fields use the first present value, and array fields combine their entries.
+The first supplied release date and the first supplied original release date each keep their available precision.
 
 All providers share the configured thread limit divided by the **Provider slowdown**
 factor (rounded up, with at least one worker). The default 2× factor gives eight

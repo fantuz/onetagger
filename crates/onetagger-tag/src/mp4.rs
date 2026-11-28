@@ -4,7 +4,7 @@ use std::convert::TryInto;
 use std::path::Path;
 use mp4ameta::{Tag, Data, Img, ImgFmt, AdvisoryRating};
 use mp4ameta::ident::DataIdent;
-use chrono::{DateTime, NaiveDate, Utc, Datelike, NaiveTime};
+use chrono::NaiveDate;
 
 use crate::{TagImpl, TagDate, CoverType, Picture, Field, Lyrics};
 
@@ -12,7 +12,6 @@ const MAGIC: u8 = 0xa9;
 
 pub struct MP4Tag {
     tag: Tag,
-    date_year_only: bool,
     separator: String
 }
 
@@ -21,7 +20,6 @@ impl MP4Tag {
         let tag = Tag::read_from_path(&path)?;
         Ok(MP4Tag {
             tag,
-            date_year_only: false,
             separator: ", ".to_string()
         })
     }
@@ -159,14 +157,13 @@ impl TagImpl for MP4Tag {
     fn set_date(&mut self, date: &TagDate, overwrite: bool) {
         let ident = DataIdent::fourcc(*b"\xa9day");
         if self.raw_by_ident(&ident).is_none() || overwrite {
-            // Write year or ISO timestamp
-            let value = if self.date_year_only || !date.has_md() {
-                date.year.to_string()
-            } else {
-                let naive_date =NaiveDate::from_ymd_opt(date.year, date.month.unwrap() as u32, date.day.unwrap() as u32).unwrap()
-                    .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-                let date: DateTime<Utc> = DateTime::from_naive_utc_and_offset(naive_date, Utc);
-                format!("{}", date.format("%+"))
+            // Retain the established MP4 timestamp form for full calendar dates.
+            let value = match (date.month, date.day) {
+                (Some(month), Some(day)) => {
+                    let Some(calendar) = NaiveDate::from_ymd_opt(date.year, month.into(), day.into()) else { return };
+                    format!("{calendar}T00:00:00+00:00")
+                }
+                _ => date.to_string(),
             };
 
             self.tag.set_data(ident, Data::Utf8(value));
@@ -310,22 +307,7 @@ impl TagImpl for MP4Tag {
 
     fn get_date(&self) -> Option<TagDate> {
         let ident = DataIdent::fourcc(*b"\xa9day");
-        let data = &self.raw_by_ident(&ident)?[0];
-        // Only year
-        if let Ok(year) = data.parse() {
-            return Some(TagDate {
-                year: year,
-                month: None,
-                day: None
-            });
-        }
-        // Parse ISO timestamp 
-        let date = DateTime::parse_from_str(&data, "%+").ok()?;
-        Some(TagDate {
-            year: date.year(),
-            month: Some(date.month() as u8),
-            day: Some(date.day() as u8)
-        })
+        TagDate::parse(self.raw_by_ident(&ident)?.first()?)
     }
 
     fn set_track_number(&mut self, track_number: &str, track_total: Option<u16>, overwrite: bool) {
@@ -346,16 +328,15 @@ impl TagImpl for MP4Tag {
         }
     }
 
-    fn set_lyrics(&mut self, lyrics: &Lyrics, synced: bool, overwrite: bool) {
+    fn set_lyrics(&mut self, lyrics: &Lyrics, synced: bool, overwrite: bool) -> bool {
         if synced {
             warn!("MP4 doesn't support synchronized lyrics!");
-            return;
+            return false;
         }
-        if !overwrite || self.tag.lyrics().is_some() {
-            return;
+        if overwrite || self.tag.lyrics().is_none() {
+            self.tag.set_lyrics(lyrics.text());
         }
-        self.tag.remove_lyrics();
-        self.tag.set_lyrics(lyrics.text());
+        true
     }
 
     fn set_explicit(&mut self, explicit: bool) {

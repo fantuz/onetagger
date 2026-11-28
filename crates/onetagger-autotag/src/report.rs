@@ -125,12 +125,7 @@ fn read_tags(path: &Path) -> Result<(Tags, FileState)> {
         };
         if value.is_empty() { None } else { Some(value) }
     });
-    let date = match wrapper.format() {
-        AudioFileFormat::FLAC | AudioFileFormat::OGG => tag.get_raw("DATE"),
-        AudioFileFormat::MP4 => tag.get_raw("©day"),
-        _ => tag.get_raw("TDRC").or_else(|| tag.get_raw("TYER")),
-    };
-    let year = date.and_then(|v| v.first().and_then(|s| s.get(..4)).and_then(|s| s.parse().ok()));
+    let year = tag.get_date().map(|date| date.year);
     let composer_key = match wrapper.format() {
         AudioFileFormat::FLAC | AudioFileFormat::OGG => "COMPOSER",
         AudioFileFormat::MP4 => "©wrt",

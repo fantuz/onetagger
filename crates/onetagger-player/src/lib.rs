@@ -267,6 +267,32 @@ mod tests {
         assert!(actual == expected, "AIFF PCM differs from the lossless WAV fixture");
     }
 
+    #[test]
+    fn opus_playback_trims_to_the_real_length_and_seeks_back_to_the_start() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/tone.opus");
+        let source = AudioSources::from_path(&path).unwrap();
+        let mut decoder = source.get_source().unwrap();
+        assert_eq!((decoder.sample_rate(), decoder.channels()), (48_000, 2));
+        let samples: Vec<_> = decoder.by_ref().collect();
+        assert_eq!(samples.len(), 48_000 * 2 * 2);
+        assert!(samples.iter().any(|sample| *sample != 0));
+        decoder.try_seek(Duration::from_millis(1800)).unwrap();
+        assert_eq!(decoder.by_ref().count(), 48_000 * 2 / 5);
+        decoder.try_seek(Duration::ZERO).unwrap();
+        assert_eq!(decoder.by_ref().take(512).collect::<Vec<_>>(), samples[..512]);
+        let preview = source.generate_wav().unwrap();
+        let wav = hound::WavReader::new(Cursor::new(preview)).unwrap();
+        assert_eq!(wav.duration(), 48_000 * 2);
+        assert!(source.waveform(32, &|| false).unwrap().iter().any(|level| *level > 0.0));
+    }
+
+    #[test]
+    fn speex_preview_reports_its_codec_limitation() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/tone.spx");
+        let source = AudioSources::from_path(path).unwrap();
+        assert!(source.get_source().err().unwrap().to_string().contains("Speex"));
+    }
+
     struct Alternating;
     impl AudioSource for Alternating {
         fn duration(&self) -> u128 { 1000 }

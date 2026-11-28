@@ -254,8 +254,14 @@ fn tag_editor_save_response(changes: &TagChanges, request_id: Option<String>) ->
     let result = changes.commit();
     crate::library::invalidate(&changes.path);
     match result {
-        Ok(_) => json!({ "action": "tagEditorSave", "status": "ok",
-            "requestId": request_id, "path": changes.path }),
+        Ok(tag) => {
+            let id3_text_values = match &tag {
+                Tag::ID3(id3) => Some(id3.native_text_values()),
+                _ => None,
+            };
+            json!({ "action": "tagEditorSave", "status": "ok", "requestId": request_id,
+                "path": changes.path, "tags": TagEditor::text_fields(&tag), "id3TextValues": id3_text_values })
+        }
         Err(error) => {
             warn!("Tag editor save failed: {error:#}");
             localized(json!({ "action": if request_id.is_some() { "tagEditorSave" } else { "error" },
@@ -852,6 +858,44 @@ mod save_tests {
     }
 
     #[test]
+    fn version_only_editor_save_upgrades_id3_without_changing_audio() {
+        use onetagger_tag::{id3::ID3Tag, TagDate, TagImpl};
+
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["tone.mp3", "tone.wav", "tone.aiff"] {
+            let path = directory.path().join(name);
+            std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../onetagger-player/test-fixtures").join(name), &path).unwrap();
+            let mut tag = ID3Tag::load_or_new(&path).unwrap();
+            tag.set_id3v24(false);
+            tag.set_date(&TagDate { year: 2024, month: Some(2), day: Some(29) }, true);
+            tag.set_raw("TIME", vec!["1735".into()], true);
+            tag.set_raw("COMM", vec!["Édition".into()], true);
+            tag.save_file(&path).unwrap();
+            assert!(!TagEditor::load_file(&path).unwrap().id3.unwrap().id3v24);
+            let decode = || onetagger_player::AudioSources::from_path(&path).unwrap().get_source().unwrap().collect::<Vec<_>>();
+            let original_audio = decode();
+            assert!(!original_audio.is_empty(), "{name}");
+
+            let Action::TagEditorSave { changes, request_id } = serde_json::from_value(json!({
+                "action": "tagEditorSave", "requestId": "upgrade",
+                "changes": { "path": path, "changes": [],
+                    "separators": { "id3": ", ", "vorbis": null, "mp4": ", " }, "id3v24": true }
+            })).unwrap() else { panic!() };
+            let response = tag_editor_save_response(&changes, request_id);
+            assert_eq!(response["status"], "ok", "{name}: {response}");
+            assert_eq!(response["tags"]["TDRC"], "2024-02-29T17:35");
+            assert!(response["tags"].get("TYER").is_none());
+            let saved = TagEditor::load_file(&path).unwrap();
+            assert_eq!(saved.tags["TDRC"], "2024-02-29T17:35");
+            let id3 = saved.id3.unwrap();
+            assert!(id3.id3v24, "{name}");
+            assert_eq!(id3.comments[0].text, "Édition");
+            assert!(decode() == original_audio, "{name}: decoded audio changed");
+        }
+    }
+
+    #[test]
     fn failed_save_is_correlated_and_legacy_errors_cannot_look_successful() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("corrupt.mp3");
@@ -919,7 +963,7 @@ mod save_tests {
     fn both_editors_save_every_supported_container_with_an_open_decoder_and_preserve_audio() {
         // Runs on Linux, Windows, Intel macOS and Apple Silicon in the native CI
         // matrix. Decode real audio before and after replacement, without a device.
-        for name in ["tone.mp3", "tone.wav", "tone.aiff", "tone.flac", "tone.ogg", "tone-aac.m4a", "tone-alac.m4a"] {
+        for name in ["tone.mp3", "tone.wav", "tone.aiff", "tone.flac", "tone.ogg", "tone.opus", "tone-aac.m4a", "tone-alac.m4a"] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join(format!("Édition 音楽 {name}"));
             std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR"))

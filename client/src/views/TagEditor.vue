@@ -118,7 +118,17 @@
                         </div>
                         
                         
-                        <q-input
+                        <div v-if='Object.hasOwn(id3TextValues, tag)' class='col-8 column q-gutter-y-xs'>
+                            <div v-for='(_, index) in id3TextValues[tag]' :key='index' class='row items-center'>
+                                <q-input v-model='id3TextValues[tag][index]' dir='auto' filled dense class='col'
+                                    :aria-label="t('tools.tagInput', { tag: tag + ' ' + (index + 1) })"
+                                    @change='saveID3TextValues(tag)' />
+                                <q-btn v-if='id3TextValues[tag].length > 1'
+                                    :aria-label="t('tools.remove')" icon='mdi-close' round dense flat
+                                    @click='removeID3TextValue(tag, index)' />
+                            </div>
+                        </div>
+                        <q-input v-else
                             v-model='file.tags[tag]'
                             dir='auto'
                             :aria-label="t('tools.tagInput', { tag })" :data-testid='"tag-field-" + tag'
@@ -129,6 +139,9 @@
                         ></q-input>
 
                         <div class='col-1 q-pl-md q-pt-xs'>
+                            <q-btn v-if='id3v24 && (Object.hasOwn(id3TextValues, tag) || /^(TPE[1-4]|TCON|TCOM|TEXT)$/.test(tag))'
+                                :aria-label="t('tools.add')" icon='mdi-plus' round dense flat
+                                @click='addID3TextValue(tag)' />
                             <q-btn round dense flat @click='removeTag(tag)'>
                                 <q-icon name='mdi-delete' class='text-red'></q-icon>
                             </q-btn>
@@ -311,12 +324,10 @@
                     <q-separator class='q-mx-auto' :style='"max-width: 513px; margin-top: 32px; margin-bottom: 25px;"' inset color="dark"/>
                     
                     <!-- ID3v2.4 -->
-                    <div class='q-mt-lg text-center'>
+                    <div v-if='file.id3' class='column flex-center q-mt-lg'>
                         <div class='text-subtitle2 text-bold text-primary custom-margin'>
                             {{ t('tools.options') }}
                         </div>
-                    </div>
-                    <div class='column flex-center'>
                         <q-toggle :label="t('tools.useId3v24')" left-label style='width: 160px;' class='justify-between' v-model='id3v24'></q-toggle>
                     </div>
             </div>
@@ -371,7 +382,7 @@ import AddAlbumArt from '../components/AddAlbumArt.vue';
 import draggable from 'vuedraggable';
 import { tagDescription } from '../scripts/tags';
 import type { ID3Comment, TagEditorImage } from '../scripts/tags';
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
 import { get1t } from '../scripts/onetagger';
 import { useQuasar } from 'quasar';
@@ -389,6 +400,7 @@ const tagNames = computed<string[]>(() => Object.keys(file.value?.tags ?? {}));
 const images = computed<TagEditorImage[]>(() => file.value?.images ?? []);
 const comments = computed<ID3Comment[]>(() => file.value?.id3?.comments ?? []);
 const unsyncLyrics = computed<ID3Comment[]>(() => file.value?.id3?.unsync_lyrics ?? []);
+const id3TextValues = computed<Record<string, string[]>>(() => file.value?.id3?.text_values ?? {});
 const doubleLayout = computed(() => $1t.settings.value.tagEditorDouble);
 const filter = ref<any>(undefined);
 const changes = ref<any[]>([]);
@@ -401,12 +413,11 @@ const id3v24 = ref(false);
 const manualTagPath = ref<string | undefined>(undefined);
 const saving = ref(false);
 const saveError = ref<string | undefined>(undefined);
-const versionChanged = ref(false);
-watch(id3v24, () => { versionChanged.value = true; });
+const versionChanged = computed(() => !!file.value?.id3 && id3v24.value !== file.value.id3.id3v24);
 const dirty = computed(() => changes.value.length > 0 || versionChanged.value);
 let saveSequence = 0;
 let switchingFile = false;
-let pendingSave: { id: string; path: string; promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
+let pendingSave: { id: string; path: string; id3v24: boolean; promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
 
 async function prepareToLeave(): Promise<boolean> {
     if (pendingSave && !await pendingSave.promise) return false;
@@ -424,7 +435,6 @@ async function prepareToLeave(): Promise<boolean> {
 onBeforeRouteLeave(async () => {
     if (!await prepareToLeave()) return false;
     changes.value = [];
-    versionChanged.value = false;
     return true;
 });
 
@@ -443,7 +453,7 @@ async function loadFile(path: string) {
     try {
         if (!await prepareToLeave()) return;
         changes.value = [];
-        versionChanged.value = false;
+        id3v24.value = file.value?.id3?.id3v24 ?? false;
         saveError.value = undefined;
         await $1t.send('tagEditorLoad', {path});
         if ($1t.settings.value.tagEditorPlayer)
@@ -530,6 +540,7 @@ function tagLabel(tag: string): string | undefined {
 // Delete tag
 function removeTag(tag: string) {
     delete file.value.tags[tag];
+    delete id3TextValues.value[tag];
     changes.value.push({
         type: 'remove',
         tag: tag
@@ -578,6 +589,25 @@ function onChange(tag: string) {
             value: value
         });
     }
+}
+
+function saveID3TextValues(tag: string) {
+    const index = changes.value.findIndex(change => change.tag === tag);
+    const change = { type: 'id3TextValues', tag, value: id3TextValues.value[tag].slice() };
+    if (index === -1) changes.value.push(change);
+    else changes.value[index] = change;
+}
+
+function addID3TextValue(tag: string) {
+    file.value.id3.text_values ??= {};
+    id3TextValues.value[tag] ??= [file.value.tags[tag]];
+    id3TextValues.value[tag].push('');
+    saveID3TextValues(tag);
+}
+
+function removeID3TextValue(tag: string, index: number) {
+    id3TextValues.value[tag].splice(index, 1);
+    saveID3TextValues(tag);
 }
 
 /*
@@ -727,7 +757,7 @@ function save(): Promise<boolean> {
     const id = `tag-editor-${++saveSequence}`;
     let resolve!: (ok: boolean) => void;
     const promise = new Promise<boolean>(done => { resolve = done; });
-    pendingSave = { id, path: file.value.path, promise, resolve };
+    pendingSave = { id, path: file.value.path, id3v24: id3v24.value, promise, resolve };
     saving.value = true;
     saveError.value = undefined;
     $1t.send('tagEditorSave', {
@@ -742,14 +772,21 @@ function save(): Promise<boolean> {
     return promise;
 }
 
-function finishSave(ok: boolean, message?: string) {
+function finishSave(ok: boolean, message?: string, tags?: Record<string, string>, textValues?: Record<string, string[]>) {
     if (!pendingSave) return;
     const pending = pendingSave;
     pendingSave = undefined;
     saving.value = false;
     if (ok) {
-        changes.value = [];
-        versionChanged.value = false;
+        if (file.value?.path === pending.path) {
+            const refresh = versionChanged.value || changes.value.some(change => change.type === 'id3TextValues');
+            changes.value = [];
+            if (refresh && tags) file.value.tags = tags;
+            if (file.value.id3) {
+                file.value.id3.id3v24 = pending.id3v24;
+                if (textValues) file.value.id3.text_values = textValues;
+            }
+        }
         $q.notify({ message: t('tools.tagsWritten'), timeout: 4000, position: 'top-right' });
     } else {
         saveError.value = t('tools.saveUnconfirmed', { detail: message ?? t('tools.retrySave') });
@@ -796,13 +833,14 @@ function wsCallback(e: any) {
             break;
         case 'tagEditorLoad':
             file.value = e.data;
+            id3v24.value = e.data.id3?.id3v24 ?? false;
             break;
         case 'tagEditorDisconnected':
             onSocketClose();
             break;
         case 'tagEditorSave':
             if (pendingSave && e.requestId === pendingSave.id && e.path === pendingSave.path) {
-                finishSave(e.status === 'ok', translateBackendMessage(e));
+                finishSave(e.status === 'ok', translateBackendMessage(e), e.tags, e.id3TextValues);
             }
             break;
         // Internal callback

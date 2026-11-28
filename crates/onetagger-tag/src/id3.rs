@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use anyhow::Error;
+use chrono::Timelike;
 use std::path::Path;
 use id3::{Version, Tag, Timestamp, Content, TagLike, Encoder, Frame, Encoding};
 use id3::frame::{Picture, PictureType, Comment, Lyrics, Popularimeter, ExtendedText, SynchronisedLyrics, TimestampFormat, SynchronisedLyricsType};
@@ -37,6 +38,7 @@ pub enum ID3AudioFormat {
 
 pub struct ID3Tag {
     tag: Tag,
+    version_on_disk: Option<Version>,
     pub format: ID3AudioFormat,
     pub id3_separator: String,
     pub id3v24: bool,
@@ -45,59 +47,36 @@ pub struct ID3Tag {
 
 const ONETAGGER_RATING_OWNER: &str = "no@email";
 
+fn is_text_list_frame(id: &str) -> bool {
+    id.len() == 4 && id.starts_with('T') && !matches!(id, "TXXX" | "TRCK" | "TPOS")
+        && id.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
 impl ID3Tag {
     // Read from file
     pub fn load_file(path: impl AsRef<Path>) -> Result<ID3Tag, Error> {
         let ext = path.as_ref().extension().unwrap_or_default().to_ascii_lowercase();
-        // MP3
-        if ext == "mp3" {
+        let format = match ext.to_str() {
+            Some("mp3") => ID3AudioFormat::MP3,
+            Some("aif" | "aiff") => ID3AudioFormat::AIFF,
+            Some("wav") => ID3AudioFormat::WAV,
+            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unsupported format!").into()),
+        };
+        let (tag, version_on_disk) = if format == ID3AudioFormat::WAV {
+            crate::wav::read_wav(path)?
+        } else {
             let tag = Tag::read_from_path(path)?;
             let version = tag.version();
-            return Ok(ID3Tag {
-                tag,
-                format: ID3AudioFormat::MP3,
-                id3_separator: String::from(", "),
-                id3v24: match version {
-                    Version::Id3v24 => true,
-                    _ => false
-                },
-                comm_lang: "eng".to_string()
-            }.into());
-        }
-        // AIFF
-        if ext == "aif" || ext == "aiff" {
-            let tag = Tag::read_from_path(path)?;
-            let version = tag.version();
-            return Ok(ID3Tag {
-                tag,
-                format: ID3AudioFormat::AIFF,
-                id3_separator: String::from(", "),
-                id3v24: match version {
-                    Version::Id3v24 => true,
-                    _ => false
-                },
-                comm_lang: "eng".to_string()
-            }.into());
-        }
-        // WAV
-        if ext == "wav" {
-            let tag = crate::wav::read_wav(path)?;
-            let version = tag.version();
-            return Ok(ID3Tag { 
-                tag,
-                format: ID3AudioFormat::WAV,
-                id3_separator: String::from(", "),
-                id3v24: match version {
-                    Version::Id3v24 => true,
-                    _ => false
-                },
-                comm_lang: "eng".to_string()
-            }.into());
-        }
-
-
-        // Unsupported
-        Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unsupported format!").into())
+            (tag, Some(version))
+        };
+        Ok(ID3Tag {
+            tag,
+            version_on_disk,
+            format,
+            id3_separator: String::from(", "),
+            id3v24: version_on_disk.unwrap_or_default() == Version::Id3v24,
+            comm_lang: "eng".to_string(),
+        })
     }
 
     // Load tag from file or create new
@@ -116,6 +95,7 @@ impl ID3Tag {
             Err(e) if e.downcast_ref::<id3::Error>().is_some_and(|e| matches!(e.kind, id3::ErrorKind::NoTag)) => {
                 Ok(ID3Tag {
                     tag: Tag::new(),
+                    version_on_disk: None,
                     format,
                     id3_separator: String::from(", "),
                     id3v24: true,
@@ -129,6 +109,93 @@ impl ID3Tag {
     // ID3 Settings
     pub fn set_id3v24(&mut self, id3v24: bool) {
         self.id3v24 = id3v24;
+    }
+
+    pub fn has_id3v24_on_disk(&self) -> bool {
+        self.version_on_disk == Some(Version::Id3v24)
+    }
+
+    pub fn native_text_values(&self) -> HashMap<String, Vec<String>> {
+        let mut values = HashMap::new();
+        if self.has_id3v24_on_disk() {
+            for frame in self.tag.frames() {
+                let id = frame.id();
+                if !is_text_list_frame(id) {
+                    continue;
+                }
+                if let Some(text) = frame.content().text().filter(|text| text.contains('\0')) {
+                    values.entry(id.to_owned()).or_insert_with(|| text.split('\0').map(String::from).collect());
+                }
+            }
+        }
+        values
+    }
+
+    pub(crate) fn set_native_text_values(&mut self, id: &str, values: Vec<String>) -> Result<(), Error> {
+        anyhow::ensure!(is_text_list_frame(id),
+            "Expected an ID3 text frame that accepts multiple values");
+        anyhow::ensure!(values.iter().all(|value| !value.contains('\0')), "An ID3 text value contains a NUL character");
+        let values: Vec<_> = values.into_iter().filter(|value| !value.is_empty()).collect();
+        self.tag.remove(id);
+        if !values.is_empty() {
+            self.tag.set_text_values(id, values);
+        }
+        Ok(())
+    }
+
+    fn upgrade_legacy_recording_date(&mut self) {
+        let year = self.tag.get("TYER").and_then(|frame| frame.content().text());
+        if self.tag.get("TDRC").is_some()
+            || !year.is_some_and(|text| text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return;
+        }
+        let Some(date) = self.get_date() else { return };
+        let clock = self.tag.get("TIME").and_then(|frame| {
+            let text = frame.content().text()?;
+            if date.day.is_none() || text.len() != 4 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            chrono::NaiveTime::parse_from_str(text, "%H%M").ok()
+        });
+        self.tag.set_date_recorded(Timestamp {
+            year: date.year,
+            month: date.month,
+            day: date.day,
+            hour: clock.map(|time| time.hour() as u8),
+            minute: clock.map(|time| time.minute() as u8),
+            second: None,
+        });
+        self.tag.remove("TYER");
+        if date.day.is_some() {
+            self.tag.remove("TDAT");
+        }
+        if clock.is_some() {
+            self.tag.remove("TIME");
+        }
+    }
+
+    fn mirror_legacy_recording_date(&mut self) {
+        let Some(date) = self.tag.date_recorded() else { return };
+        self.tag.set_year(date.year);
+        self.tag.remove("TDAT");
+        self.tag.remove("TIME");
+        let day_month = date.month.zip(date.day).filter(|(month, day)| {
+            chrono::NaiveDate::from_ymd_opt(date.year, (*month).into(), (*day).into()).is_some()
+        });
+        let time = date.hour.zip(date.minute).filter(|(hour, minute)| *hour < 24 && *minute < 60);
+        if let Some((month, day)) = day_month {
+            self.tag.set_text("TDAT", format!("{day:02}{month:02}"));
+            if let Some((hour, minute)) = time {
+                self.tag.set_text("TIME", format!("{hour:02}{minute:02}"));
+            }
+        }
+        // Keep the richer timestamp as an extension when v2.3 cannot express it.
+        if (date.month.is_none() || day_month.is_some())
+            && (date.hour.is_none() || day_month.is_some() && time.is_some()) && date.second.is_none()
+        {
+            self.tag.remove_date_recorded();
+        }
     }
 
     /// Set COMM frame language
@@ -194,6 +261,11 @@ impl TagImpl for ID3Tag {
             true => Version::Id3v24,
             false => Version::Id3v23
         };
+        if self.id3v24 && matches!(self.version_on_disk, Some(Version::Id3v22 | Version::Id3v23)) {
+            self.upgrade_legacy_recording_date();
+        } else if !self.id3v24 && self.has_id3v24_on_disk() {
+            self.mirror_legacy_recording_date();
+        }
 
         // Fix art for serato
         if !self.id3v24 {
@@ -212,20 +284,24 @@ impl TagImpl for ID3Tag {
             self.set_raw("TPOS", self.get_raw("TPOS").unwrap_or(vec![]), true);
         }
 
-        // Stage every format in a sibling file before replacing the original.
-        crate::file_ops::atomic_update(path, |path| {
         match self.format {
-            ID3AudioFormat::MP3 => {
+            ID3AudioFormat::MP3 => crate::file_ops::atomic_update(path, |staged| {
                 Encoder::new()
                     .version(version)
                     .padding(2048)
-                    .write_to_path(&self.tag, path)?;
-            },
-            ID3AudioFormat::AIFF => self.tag.write_to_path(path, version)?,
-            ID3AudioFormat::WAV => crate::wav::write_wav(path, self.tag.clone(), version)?,
+                    .write_to_path(&self.tag, staged)?;
+                Ok(())
+            })?,
+            ID3AudioFormat::AIFF => crate::file_ops::atomic_update(path, |staged| {
+                self.tag.write_to_path(staged, version)?;
+                Ok(())
+            })?,
+            ID3AudioFormat::WAV => crate::file_ops::atomic_rewrite(path, |source, staged| {
+                crate::wav::write_wav(source, staged, &self.tag, version)
+            })?,
         }
+        self.version_on_disk = Some(version);
         Ok(())
-        })
     }
 
     fn set_separator(&mut self, separator: &str) {
@@ -242,7 +318,8 @@ impl TagImpl for ID3Tag {
         }
         // Add TXXX
         for extended in self.tag.extended_texts() {
-            tags.insert(extended.description.to_string(), extended.value.split(&self.id3_separator).map(String::from).collect());
+            let separator = if self.has_id3v24_on_disk() && extended.value.contains('\0') { "\0" } else { &self.id3_separator };
+            tags.insert(extended.description.to_string(), extended.value.split(separator).map(String::from).collect());
         }
         tags
     }
@@ -251,6 +328,9 @@ impl TagImpl for ID3Tag {
     fn set_date(&mut self, date: &TagDate, overwrite: bool) {
         // ID3 v2.3
         if !self.id3v24 {
+            if !overwrite && self.tag.date_recorded().is_some() {
+                return;
+            }
             // Year
             if overwrite || self.tag.get("TYER").is_none() {
                 // Remove v2.4
@@ -270,7 +350,7 @@ impl TagImpl for ID3Tag {
             return;
         }
         // ID3 v2.4
-        if overwrite || self.tag.date_recorded().is_none() {
+        if overwrite || self.get_date().is_none() {
             let ts = Timestamp {
                 year: date.year,
                 month: date.month,
@@ -466,6 +546,9 @@ impl TagImpl for ID3Tag {
         // Custom tag (TXXX)
         if tag.len() != 4 {
             if let Some(t) = self.tag.extended_texts().find(|t| t.description == tag) {
+                if self.has_id3v24_on_disk() && t.value.contains('\0') {
+                    return Some(t.value.split('\0').map(String::from).collect());
+                }
                 return Some(vec![t.value.to_string()]);
             }
             return None;
@@ -490,9 +573,18 @@ impl TagImpl for ID3Tag {
         // Get tag
         if let Some(t) = self.tag.get(tag) {
             if let Some(content) = t.content().text() {
+                if self.has_id3v24_on_disk() && content.contains('\0') {
+                    return Some(if matches!(tag, "TRCK" | "TPOS") {
+                        vec![content.replace('\0', "/")]
+                    } else {
+                        content.split('\0').map(String::from).collect()
+                    });
+                }
                 // In ID3v2.2/3 strings are NULL terminated, so they can't contain null bytes.
                 // Because of that the ID3 library replaces \0 with / and then back
-                if (self.tag.version() == Version::Id3v22 || self.tag.version() == Version::Id3v23) && content.contains("\0") {
+                if matches!(self.version_on_disk.unwrap_or(self.tag.version()), Version::Id3v22 | Version::Id3v23)
+                    && content.contains("\0")
+                {
                     return Some(content.replace("\0", "/").split(&self.id3_separator).map(String::from).collect());
                 }
                 Some(content.split(&self.id3_separator).map(String::from).collect())
@@ -515,12 +607,8 @@ impl TagImpl for ID3Tag {
     }
 
     fn get_date(&self) -> Option<TagDate> {
-        if let Some(date) = self.tag.date_recorded() {
-            return Some(TagDate {
-                year: date.year,
-                month: date.month,
-                day: date.day
-            });
+        if let Some(date) = self.tag.get("TDRC").and_then(|frame| frame.content().text()).and_then(TagDate::parse) {
+            return Some(date);
         }
         // ID3v2.3 stores the year and the optional DDMM in separate frames.
         let year = self.tag.get("TYER")?.content().text()?.parse().ok()?;
@@ -546,34 +634,43 @@ impl TagImpl for ID3Tag {
         self.set_raw("TRCK", vec![value], overwrite);
     }
 
-    fn set_lyrics(&mut self, lyrics: &crate::Lyrics, synced: bool, overwrite: bool) {
-        // Add synced
+    fn set_lyrics(&mut self, lyrics: &crate::Lyrics, synced: bool, overwrite: bool) -> bool {
+        let code = lyrics.language.split(['-', '_']).next().unwrap_or_default().to_ascii_lowercase();
+        let lang = if code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+            &code
+        } else {
+            isolang::Language::from_639_1(&code).map_or("XXX", |language| language.to_639_3())
+        };
         if synced {
-            if !lyrics.synced() || (!overwrite && self.tag.synchronised_lyrics().next().is_some()) {
-                return;
+            if !overwrite && self.tag.synchronised_lyrics().next().is_some() {
+                return true;
+            }
+            let content: Vec<_> = lyrics.iter_lines().filter_map(|line| {
+                let start = u32::try_from(line.start?.as_millis()).ok()?;
+                Some((start, line.text.to_string()))
+            }).collect();
+            if content.is_empty() {
+                return false;
             }
             self.tag.remove_all_synchronised_lyrics();
             self.tag.add_frame(SynchronisedLyrics {
-                lang: lyrics.language.to_string(),
+                lang: lang.into(),
                 timestamp_format: TimestampFormat::Ms,
                 content_type: SynchronisedLyricsType::Lyrics,
                 description: "Lyrics".to_string(),
-                content: lyrics.iter_lines().filter_map(|l| match l.start {
-                    Some(start) => Some((start.as_millis() as u32, l.text.to_string())),
-                    None => None
-                }).collect(),
+                content,
+            });
+            return true;
+        }
+        if overwrite || self.tag.lyrics().next().is_none() {
+            self.tag.remove_all_lyrics();
+            self.tag.add_frame(Lyrics {
+                lang: lang.into(),
+                description: "Lyrics".to_string(),
+                text: lyrics.text()
             });
         }
-        // Add unsynced
-        if !overwrite && self.tag.lyrics().next().is_some() {
-            return;
-        }
-        self.tag.remove_all_lyrics();
-        self.tag.add_frame(Lyrics {
-            lang: lyrics.language.to_string(),
-            description: "Lyrics".to_string(),
-            text: lyrics.text()
-        });
+        true
     }
 
     fn set_explicit(&mut self, explicit: bool) {
@@ -785,6 +882,40 @@ mod safety_tests {
     }
 
     #[test]
+    fn wav_riff_comment_saves_in_both_id3_versions_and_can_be_removed() {
+        use riff::{ChunkContents, ChunkId, LIST_ID};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("riff-comment.wav");
+        let comment = "Échantillon";
+        let mut original = wav_bytes();
+        let mut wav = std::io::Cursor::new(&mut original);
+        wav.set_position(wav.get_ref().len() as u64);
+        ChunkContents::Children(LIST_ID.clone(), ChunkId::new("INFO").unwrap(), vec![
+            ChunkContents::Data(ChunkId::new("ICMT").unwrap(), format!("{comment}\0").into_bytes()),
+        ]).write(&mut wav).unwrap();
+
+        for use_v24 in [false, true] {
+            fs::write(&path, &original).unwrap();
+            let mut tag = ID3Tag::load_file(&path).unwrap();
+            assert!(!tag.has_id3v24_on_disk());
+            assert_eq!(tag.get_comments()[0].text, comment);
+            tag.set_id3v24(use_v24);
+            tag.save_file(&path).unwrap();
+
+            let mut saved = ID3Tag::load_file(&path).unwrap();
+            assert_eq!(saved.has_id3v24_on_disk(), use_v24);
+            assert_eq!(Tag::read_from_path(&path).unwrap().comments().next().unwrap().text, comment);
+            let written = fs::read(&path).unwrap();
+            assert!(written.windows(12).any(|bytes| bytes == b"data\x04\0\0\0\x01\x02\x03\x04"));
+
+            saved.set_comments(&vec![]);
+            saved.save_file(&path).unwrap();
+            assert!(ID3Tag::load_file(&path).unwrap().get_comments().is_empty());
+        }
+    }
+
+    #[test]
     fn id3v23_release_date_round_trips_calendar_precision() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("track.mp3");
@@ -824,5 +955,53 @@ mod safety_tests {
             let date = tag.get_date().unwrap();
             assert_eq!((date.year, date.month, date.day), (2023, None, None));
         }
+    }
+
+    #[test]
+    fn timed_and_plain_lyrics_are_independent_and_language_is_normalized() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lyrics.mp3");
+        fs::write(&path, [0u8; 64]).unwrap();
+        let mut tag = ID3Tag::load_or_new(&path).unwrap();
+        let lyrics = crate::Lyrics { language: "fr-CH".into(), paragraphs: vec![vec![
+            crate::LyricsLine { text: "Introduction".into(), start: None, end: None, parts: vec![] },
+            crate::LyricsLine { text: "Première ligne".into(), start: Some(std::time::Duration::from_millis(1234)),
+                end: None, parts: vec![] },
+        ]] };
+        assert!(lyrics.synced());
+        assert!(tag.set_lyrics(&lyrics, true, false));
+        tag.save_file(&path).unwrap();
+        let mut tag = ID3Tag::load_file(&path).unwrap();
+        assert!(tag.get_unsync_lyrics().is_empty());
+        let timed = tag.tag.synchronised_lyrics().next().unwrap();
+        assert_eq!(timed.lang, "fra");
+        assert_eq!(timed.content, [(1234, "Première ligne".to_owned())]);
+        assert!(tag.set_lyrics(&lyrics, false, false));
+        tag.save_file(&path).unwrap();
+        let tag = ID3Tag::load_file(&path).unwrap();
+        assert_eq!(tag.get_unsync_lyrics()[0].text, "Introduction\nPremière ligne");
+        assert_eq!(tag.tag.synchronised_lyrics().count(), 1);
+    }
+
+    #[test]
+    fn changing_id3_versions_preserves_calendar_fields_and_existing_release_dates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("dates.mp3");
+        fs::write(&path, [0u8; 64]).unwrap();
+        let mut tag = ID3Tag::load_or_new(&path).unwrap();
+        tag.set_raw("TDRC", vec!["2024-02-29T17:35".into()], true);
+        tag.save_file(&path).unwrap();
+        let mut tag = ID3Tag::load_file(&path).unwrap();
+        tag.set_id3v24(false);
+        tag.save_file(&path).unwrap();
+        let mut tag = ID3Tag::load_file(&path).unwrap();
+        assert_eq!(tag.get_raw("TYER").unwrap(), ["2024"]);
+        assert_eq!(tag.get_raw("TDAT").unwrap(), ["2902"]);
+        assert_eq!(tag.get_raw("TIME").unwrap(), ["1735"]);
+        tag.set_id3v24(true);
+        tag.set_date(&TagDate::parse("2010").unwrap(), false);
+        tag.save_file(&path).unwrap();
+        let tag = ID3Tag::load_file(&path).unwrap();
+        assert_eq!(tag.get_raw("TDRC").unwrap(), ["2024-02-29T17:35"]);
     }
 }

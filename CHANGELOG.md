@@ -1,5 +1,24 @@
 ## Unreleased (fantuz fork)
 
+## 2.3.0 — 2026-11-28
+
+### WAV and Edit Tags
+
+- Save WAV tags without flattening cue labels, associated data or wave lists. Preserve audio and other RIFF chunks, and write INFO metadata inside the WAVE container.
+- Read WAV comments as structured ID3 comments, so a legacy RIFF comment can be saved in ID3v2.3 or ID3v2.4. The version switch follows the selected file. Change it and save to convert an MP3, WAV or AIFF tag.
+- Edit native ID3v2.4 artists, genres and other text lists one value at a time. Commas within a value stay part of that value.
+- Read valid year, month and full-date tags from supported formats. Carry the available date precision into ID3 upgrades and preserve compatible legacy date fields when converting to ID3v2.3.
+- Keep each date from its first selected Manual Tag match. Use the available month when sorting provider results by release date.
+
+### Lyrics, playback and providers
+
+- Fill or replace plain lyrics in FLAC, Ogg and M4A according to the overwrite setting. Timed and plain ID3 lyrics have separate controls. Optional LRC exports preserve existing sidecar files.
+- Play mono and stereo Ogg Opus, seek within tracks, and generate waveforms and browser previews. Speex remains available for tag editing.
+- Distinguish an exhausted Spotify developer quota from temporary throttling. Spotify catalogue tagging retains partial release dates, checks the duration of ISRC matches when enabled, and shows the fields its adapter can supply.
+- Verify the selection and results exchange against the current Library Workbench bridge. Existing report versions remain supported.
+
+[Full changes since v2.2.3](https://github.com/fantuz/onetagger/compare/v2.2.3...v2.3.0)
+
 ## 2.2.3 — 2026-11-26
 
 ### Tags and artwork

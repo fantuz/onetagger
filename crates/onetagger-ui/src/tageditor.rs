@@ -17,28 +17,29 @@ impl TagEditor {
         let filename = path.as_ref().file_name().ok_or(anyhow!("Invalid filename"))?.to_str().ok_or(anyhow!("Invalid filename!"))?;
         let tag_wrap = Tag::load_file(&path, true)?;
         let id3_binary = ID3Binary::from_tag(&tag_wrap);
-        // Load tags
-        let tag = tag_wrap.tag();
-        let tags = tag.all_tags().iter().map(|(k, v)| {
-            (k.to_owned(), v.join(",").replace('\0', ""))
-        }).collect();
 
         // Load images
         let mut images = vec![];
-        for picture in tag.get_art() {
+        for picture in tag_wrap.tag().get_art() {
             if let Ok(art) = TagEditor::load_art(picture) {
                 images.push(art);
             }
         }
 
         Ok(TagEditorFile {
-            tags,
+            tags: Self::text_fields(&tag_wrap),
             filename: filename.to_owned(),
             format: tag_wrap.format(),
             path: path.as_ref().to_owned(),
             images,
             id3: id3_binary
         })
+    }
+
+    pub(crate) fn text_fields(tag: &Tag) -> HashMap<String, String> {
+        tag.tag().all_tags().into_iter().map(|(key, values)| {
+            (key, values.join(", ").replace('\0', ""))
+        }).collect()
     }
 
     // Load art and encode
@@ -86,6 +87,8 @@ pub struct TagEditorImage {
 // Binary ID3 tags
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ID3Binary {
+    pub id3v24: bool,
+    pub text_values: HashMap<String, Vec<String>>,
     pub comments: Vec<ID3Comment>,
     pub unsync_lyrics: Vec<ID3Comment>,
     pub popularimeter: Option<ID3Popularimeter>
@@ -95,6 +98,8 @@ impl ID3Binary {
     pub fn from_tag(tag: &Tag) -> Option<ID3Binary> {
         match tag {
             Tag::ID3(t) => Some(ID3Binary {
+                id3v24: t.has_id3v24_on_disk(),
+                text_values: t.native_text_values(),
                 comments: t.get_comments(),
                 unsync_lyrics: t.get_unsync_lyrics(),
                 popularimeter: t.get_popularimeter()

@@ -1,9 +1,10 @@
 class Onetagger < Formula
   desc "Music library tagging application and command-line tools"
   homepage "https://github.com/fantuz/onetagger"
-  url "https://github.com/fantuz/onetagger.git", tag: "v2.2.3"
+  url "https://github.com/fantuz/onetagger.git", tag: "v2.3.0"
   license "GPL-3.0-only"
 
+  depends_on "cmake" => :build
   depends_on "node@24" => :build
   depends_on "pnpm" => :build
   depends_on "rustup" => :build

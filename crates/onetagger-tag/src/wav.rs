@@ -1,214 +1,289 @@
-use anyhow::Error;
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use anyhow::{ensure, Error};
+use id3::{frame::Comment, Frame, Tag, TagLike, Version};
+use riff::{Chunk, ChunkId, LIST_ID, RIFF_ID};
 use std::fs::File;
-use std::collections::HashMap;
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use id3::{Tag, TagLike, Frame, Version};
-use once_cell::sync::Lazy;
-use riff::{Chunk, ChunkId, LIST_ID, RIFF_ID, ChunkContents};
 
-/// RIFF `id3 ` chunk
-static ID3_ID_1: ChunkId = ChunkId { value: [0x69, 0x64, 0x33, 0x20] };
-static ID3_ID_2: ChunkId = ChunkId { value: [0x49, 0x44, 0x33, 0x20] };
-/// RIFF WAVE chunk
-static WAVE_ID:  ChunkId = ChunkId { value: [0x57, 0x41, 0x56, 0x45] };
-static INFO_ID:  ChunkId = ChunkId { value: [0x49, 0x4E, 0x46, 0x4F] };
+const WAVE_ID: ChunkId = ChunkId { value: *b"WAVE" };
+const INFO_ID: ChunkId = ChunkId { value: *b"INFO" };
 
-/// ID3 Frame to RIFF ChunkID
-static ID3_RIFF: Lazy<HashMap<&'static str, ChunkId>> = Lazy::new(|| {
-    let mut m = HashMap::new();
-    m.insert("TIT2", ChunkId::new("INAM").unwrap());
-    m.insert("TALB", ChunkId::new("IPRD").unwrap());
-    m.insert("TPE1", ChunkId::new("IART").unwrap());
-    m.insert("COMM", ChunkId::new("ICMT").unwrap());
-    m.insert("TCON", ChunkId::new("IGNR").unwrap());
-    m.insert("TSRC", ChunkId::new("ISRC").unwrap());
-    m
-});
+const INFO_FRAMES: [([u8; 4], &str); 6] = [
+    (*b"INAM", "TIT2"),
+    (*b"IPRD", "TALB"),
+    (*b"IART", "TPE1"),
+    (*b"IGNR", "TCON"),
+    (*b"ISRC", "TSRC"),
+    (*b"ICMT", "COMM"),
+];
 
-/// Write wav to path
-/// Will copy ID3 meta into RIFF INFO chunk
-pub(crate) fn write_wav(path: impl AsRef<Path>, tag: Tag, version: Version) -> Result<(), Error> {
-    let mut file = BufReader::new(File::open(&path)?);
-    let file_len = validate_header(&mut file)?;
-    let mut offset = 0;
-    // Read all the chunks
-    let mut riff_chunks = vec![];
-    let mut list_chunks = vec![];
-    loop {
-        let chunk = match Chunk::read(&mut file, offset) {
-            Ok(chunk) => chunk,
-            Err(_) => break
-        };
-        // Search for parent chunks
-        if chunk.id() != LIST_ID && chunk.id() != RIFF_ID {
-            offset += 4;
-            continue;
-        }
-        if chunk.len() < 4 || chunk.offset() + 8 + u64::from(chunk.len()) > file_len {
-            return Err(anyhow!("Invalid or truncated WAV container chunk"));
-        }
-        // Save chunks
-        for child in chunk.iter(&mut file) {
-            let child = child?;
-            if chunk.id() == LIST_ID {
-                list_chunks.push(child);
-            } else {
-                riff_chunks.push(child);
-            }
-        }
-        
-        offset += 8 + u64::from(chunk.len()) + u64::from(chunk.len() % 2);
+struct WaveLayout {
+    passthrough: Vec<Chunk>,
+    info: Vec<Chunk>,
+    trailing_start: u64,
+    file_len: u64,
+}
+
+fn is_id3(chunk: &Chunk) -> bool {
+    matches!(&chunk.id().value, b"id3 " | b"ID3 ")
+}
+
+fn info_frame(chunk: &Chunk) -> Option<&'static str> {
+    INFO_FRAMES.iter().find(|(id, _)| *id == chunk.id().value).map(|(_, frame)| *frame)
+}
+
+fn padded_end(chunk: &Chunk) -> u64 {
+    let length = u64::from(chunk.len());
+    chunk.offset() + 8 + length + length % 2
+}
+
+fn read_chunk(file: &mut BufReader<File>, start: u64, limit: u64) -> Result<Chunk, Error> {
+    ensure!(limit - start >= 8, "Truncated WAV chunk header");
+    let chunk = Chunk::read(file, start)?;
+    ensure!(padded_end(&chunk) <= limit, "Truncated WAV chunk {:?}", chunk.id().value);
+    Ok(chunk)
+}
+
+fn is_info(file: &mut BufReader<File>, chunk: &Chunk) -> Result<bool, Error> {
+    if chunk.id() != LIST_ID {
+        return Ok(false);
     }
+    ensure!(chunk.len() >= 4, "Invalid WAV LIST type");
+    Ok(chunk.read_type(file)? == INFO_ID)
+}
 
-
-    // Get all the RIFF chunks
-    let mut resolved_riff_chunks = vec![];
-    for chunk in riff_chunks {
-        // Resolve LIST chunks
-        if chunk.id() == LIST_ID {
-            for child in chunk.iter(&mut file) {
-                let child = child?;
-                if child.id() != RIFF_ID && child.id() != LIST_ID {
-                    list_chunks.push(child);
-                }
-            }
-            continue;
-        }
-        // Resolve nested (because of SOME apps)
-        if chunk.id() == RIFF_ID {
-            for child in chunk.iter(&mut file) {
-                let child = child?;
-                if child.id() != RIFF_ID && child.id() != LIST_ID {
-                    resolved_riff_chunks.push(child);
-                }
-            }
-            continue;
-        }
-        resolved_riff_chunks.push(chunk);
+fn read_info(file: &mut BufReader<File>, list: &Chunk, info: &mut Vec<Chunk>) -> Result<(), Error> {
+    let mut offset = list.offset() + 12;
+    let limit = list.offset() + 8 + u64::from(list.len());
+    while offset < limit {
+        let chunk = read_chunk(file, offset, limit)?;
+        offset = padded_end(&chunk);
+        info.push(chunk);
     }
-    let riff_chunks = resolved_riff_chunks;
-
-    // Generate the RIFF chunk
-    let mut riff_data = vec![];
-    for chunk in riff_chunks {
-        // skip old ID3 chunk
-        if chunk.id() == ID3_ID_1 || chunk.id() == ID3_ID_2 {
-            continue;
-        }
-        // Passthru
-        let data = ChunkContents::Data(chunk.id(), chunk.read_contents(&mut file)?);
-        riff_data.push(data);
-    }
-    // Add ID3 chunk
-    let mut out = vec![];
-    tag.write_to(Cursor::new(&mut out), version)?;
-    riff_data.push(ChunkContents::Data(ID3_ID_1.clone(), out));
-    let riff_chunk = ChunkContents::Children(RIFF_ID.clone(), WAVE_ID.clone(), riff_data);
-
-    // Generate LIST chunk
-    let mut list_data = vec![];
-    for frame in tag.frames() {
-        if let Some(chunk_id) = ID3_RIFF.get(frame.id()) {
-            if let Some(text) = frame.content().text() {
-                let data = ChunkContents::Data(chunk_id.clone(), format!("{text}").as_bytes().to_owned());
-                list_data.push(data);
-            }
-        }
-    }
-    
-    // Add original LIST chunks
-    for chunk in list_chunks {
-        if list_data.iter().any(|c| matches!(c, ChunkContents::Data(id, _) if id == &chunk.id())) {
-            continue;
-        }
-        let data = ChunkContents::Data(chunk.id(), chunk.read_contents(&mut file)?);
-        list_data.push(data);
-    }
-    let list_chunk = ChunkContents::Children(LIST_ID.clone(), INFO_ID.clone(), list_data);
-
-    // The caller writes a private staged copy. Close the reader before truncation (Windows).
-    drop(file);
-    let mut file = BufWriter::new(File::create(path)?);
-    riff_chunk.write(&mut file)?;
-    list_chunk.write(&mut file)?;
-    file.flush()?;
-    file.get_ref().sync_all()?;
-
     Ok(())
 }
 
-/// Read WAV from file, will copy missing tags from RIFF to ID3
-pub(crate) fn read_wav(path: impl AsRef<Path>) -> Result<Tag, Error> {
-    let mut file = BufReader::new(File::open(path)?);
-    let file_len = validate_header(&mut file)?;
-    let mut offset = 0;
-    // Read all the chunks
-    let mut chunks = vec![];
-    loop {
-        let chunk = match Chunk::read(&mut file, offset) {
-            Ok(chunk) => chunk,
-            Err(_) => break
-        };
-        // Search for parent chunks
-        if chunk.id() != LIST_ID && chunk.id() != RIFF_ID {
-            offset += 4;
-            continue;
-        }
-        if chunk.len() < 4 || chunk.offset() + 8 + u64::from(chunk.len()) > file_len {
-            return Err(anyhow!("Invalid or truncated WAV container chunk"));
-        }
-        for child in chunk.iter(&mut file) {
-            chunks.push(child?);
-        }
-        offset += 8 + u64::from(chunk.len()) + u64::from(chunk.len() % 2);
-    }
-
-    // Resolve nested chunks because SOME apps do that
-    let mut new_chunks = vec![];
-    for chunk in chunks {
-        // Resolve nested
-        if chunk.id() == RIFF_ID || chunk.id() == LIST_ID {
-            for c in chunk.iter(&mut file) {
-                new_chunks.push(c?);
-            }
-            continue;
-        }
-        new_chunks.push(chunk);
-    }
-    let chunks = new_chunks;
-
-    // Read ID3 using the new ID3 reader
-    file.seek(SeekFrom::Start(0))?;
-    let mut id3 = id3::no_tag_ok(Tag::read_from2(&mut file))?.unwrap_or_default();
-
-    // Copy tags from RIFF to ID3 if missing
-    for (frame_name, chunk_id) in ID3_RIFF.iter() {
-        if id3.get(frame_name).is_none() {
-            if let Some(chunk) = chunks.iter().find(|c| &c.id() == chunk_id) {
-                let data = chunk.read_contents(&mut file)?;
-                if let Ok(data) = String::from_utf8(data) {
-                    id3.add_frame(Frame::text(frame_name, data.replace("\0", "")));
-                }
-            }
+fn read_layout(file: &mut BufReader<File>) -> Result<WaveLayout, Error> {
+    let file_len = file.get_ref().metadata()?.len();
+    let root = read_chunk(file, 0, file_len)?;
+    ensure!(root.id() == RIFF_ID && root.len() >= 4 && root.read_type(file)? == WAVE_ID,
+        "Expected a RIFF/WAVE container");
+    let mut layout = WaveLayout {
+        passthrough: Vec::new(),
+        info: Vec::new(),
+        trailing_start: padded_end(&root),
+        file_len,
+    };
+    let limit = 8 + u64::from(root.len());
+    let mut offset = 12;
+    while offset < limit {
+        let chunk = read_chunk(file, offset, limit)?;
+        offset = padded_end(&chunk);
+        if is_info(file, &chunk)? {
+            read_info(file, &chunk, &mut layout.info)?;
+        } else if info_frame(&chunk).is_some() {
+            // Recover misplaced INFO fields written directly inside WAVE.
+            layout.info.push(chunk);
+        } else if !is_id3(&chunk) {
+            layout.passthrough.push(chunk);
         }
     }
 
-    Ok(id3)
+    // Older One Tagger versions appended LIST/INFO after the RIFF boundary.
+    // Recover those fields, then preserve any other trailing bytes verbatim.
+    while file_len - layout.trailing_start >= 4 {
+        file.seek(SeekFrom::Start(layout.trailing_start))?;
+        let mut id = [0; 4];
+        file.read_exact(&mut id)?;
+        if id != LIST_ID.value {
+            break;
+        }
+        let list = read_chunk(file, layout.trailing_start, file_len)?;
+        if !is_info(file, &list)? {
+            break;
+        }
+        read_info(file, &list, &mut layout.info)?;
+        layout.trailing_start = padded_end(&list);
+    }
+    Ok(layout)
 }
 
-// Validate before parsing or staging a replacement; a zero-length RIFF/LIST must not loop.
-fn validate_header(file: &mut BufReader<File>) -> Result<u64, Error> {
-    let mut header = [0u8; 12];
-    file.read_exact(&mut header)?;
-    if &header[..4] != b"RIFF" || &header[8..] != b"WAVE" {
-        return Err(anyhow!("Invalid WAV header"));
+fn info_text(file: &mut BufReader<File>, chunk: &Chunk) -> Result<Option<String>, Error> {
+    Ok(String::from_utf8(chunk.read_contents(file)?).ok().map(|mut text| {
+        text.truncate(text.trim_end_matches('\0').len());
+        text
+    }))
+}
+
+pub(crate) fn read_wav(path: impl AsRef<Path>) -> Result<(Tag, Option<Version>), Error> {
+    let mut file = BufReader::new(File::open(path)?);
+    let layout = read_layout(&mut file)?;
+    file.rewind()?;
+    let embedded = id3::no_tag_ok(Tag::read_from2(&mut file))?;
+    let version = embedded.as_ref().map(Tag::version);
+    let mut tag = embedded.unwrap_or_default();
+
+    for chunk in &layout.info {
+        let Some(frame) = info_frame(chunk) else { continue };
+        if tag.get(frame).is_some() {
+            continue;
+        }
+        let Some(text) = info_text(&mut file, chunk)? else { continue };
+        if frame == "COMM" {
+            tag.add_frame(Comment { lang: "XXX".into(), description: String::new(), text });
+        } else {
+            tag.add_frame(Frame::text(frame, text));
+        }
     }
-    let declared_len = u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap())) + 8;
-    let file_len = file.get_ref().metadata()?.len();
-    if declared_len < 12 || declared_len > file_len {
-        return Err(anyhow!("Invalid or truncated WAV container"));
+    Ok((tag, version))
+}
+
+fn write_chunk(
+    file: &mut BufWriter<File>,
+    id: &[u8; 4],
+    contents: impl FnOnce(&mut BufWriter<File>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let start = file.stream_position()?;
+    file.write_all(id)?;
+    file.write_all(&[0; 4])?;
+    contents(file)?;
+    let end = file.stream_position()?;
+    let length = u32::try_from(end - start - 8)?;
+    if length % 2 == 1 {
+        file.write_all(&[0])?;
     }
-    file.seek(SeekFrom::Start(0))?;
-    Ok(file_len)
+    let padded = file.stream_position()?;
+    file.seek(SeekFrom::Start(start + 4))?;
+    file.write_all(&length.to_le_bytes())?;
+    file.seek(SeekFrom::Start(padded))?;
+    Ok(())
+}
+
+fn copy_range(
+    source: &mut BufReader<File>,
+    staged: &mut BufWriter<File>,
+    start: u64,
+    end: u64,
+) -> Result<(), Error> {
+    source.seek(SeekFrom::Start(start))?;
+    let expected = end - start;
+    ensure!(io::copy(&mut source.take(expected), staged)? == expected, "WAV changed while being saved");
+    Ok(())
+}
+
+/// Rewrite ID3 and INFO while retaining complete non-metadata chunks, including pad bytes.
+pub(crate) fn write_wav(source: &Path, staged: &Path, tag: &Tag, version: Version) -> Result<(), Error> {
+    let mut source = BufReader::new(File::open(source)?);
+    let layout = read_layout(&mut source)?;
+    let mut id3 = Vec::new();
+    tag.write_to(&mut id3, version)?;
+    let mirrors: Vec<_> = INFO_FRAMES.iter().filter_map(|(id, frame)| {
+        let text = if *frame == "COMM" {
+            tag.comments().find(|comment| comment.description.is_empty()).map(|comment| comment.text.as_str())
+        } else {
+            // INFO stores one string. Keep the full list in the ID3 chunk.
+            tag.get(frame).and_then(|frame| frame.content().text_values()?.next())
+        }?;
+        Some((id, text))
+    }).collect();
+    let mut output = BufWriter::new(File::create(staged)?);
+    write_chunk(&mut output, b"RIFF", |output| {
+        output.write_all(b"WAVE")?;
+        for chunk in &layout.passthrough {
+            copy_range(&mut source, output, chunk.offset(), padded_end(chunk))?;
+        }
+        write_chunk(output, b"id3 ", |output| Ok(output.write_all(&id3)?))?;
+        if !mirrors.is_empty() || !layout.info.is_empty() {
+            write_chunk(output, b"LIST", |output| {
+                output.write_all(b"INFO")?;
+                for (id, text) in &mirrors {
+                    write_chunk(output, id, |output| {
+                        output.write_all(text.as_bytes())?;
+                        Ok(output.write_all(&[0])?)
+                    })?;
+                }
+                for chunk in &layout.info {
+                    if mirrors.iter().any(|(id, _)| **id == chunk.id().value) {
+                        continue;
+                    }
+                    if info_frame(chunk).is_some_and(|frame| tag.get(frame).is_none())
+                        && info_text(&mut source, chunk)?.is_some()
+                    {
+                        // The readable fallback was removed from the edited tag.
+                        continue;
+                    }
+                    copy_range(&mut source, output, chunk.offset(), padded_end(chunk))?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
+    copy_range(&mut source, &mut output, layout.trailing_start, layout.file_len)?;
+    output.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{id3::ID3Tag, TagImpl};
+    use std::fs;
+
+    fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut bytes = id.to_vec();
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            bytes.push(0x7f);
+        }
+        bytes
+    }
+
+    #[test]
+    fn wav_save_preserves_cue_lists_wave_lists_unknown_chunks_and_the_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lists.wav");
+        let cue = chunk(b"cue ", &[1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, b'd', b'a', b't', b'a',
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut associated = b"adtl".to_vec();
+        associated.extend(chunk(b"labl", b"\x01\0\0\0Cue 1!\0"));
+        let associated = chunk(b"LIST", &associated);
+        let mut wave_list = b"wavl".to_vec();
+        wave_list.extend(chunk(b"data", &[1, 2, 3, 4]));
+        wave_list.extend(chunk(b"slnt", &2u32.to_le_bytes()));
+        wave_list.extend(chunk(b"data", &[5, 6]));
+        let wave_list = chunk(b"LIST", &wave_list);
+        let unknown = chunk(b"JUNK", &[0x11, 0x22, 0x33]);
+        let private_info = chunk(b"IXYZ", b"odd");
+        let mut wave = b"WAVE".to_vec();
+        wave.extend(chunk(b"fmt ", &[1, 0, 1, 0, 0x44, 0xac, 0, 0, 0x88, 0x58, 1, 0, 2, 0, 16, 0]));
+        for bytes in [&cue, &associated, &wave_list, &unknown] {
+            wave.extend_from_slice(bytes);
+        }
+        let mut bytes = chunk(b"RIFF", &wave);
+        let mut old_info = b"INFO".to_vec();
+        old_info.extend(chunk(b"INAM", b"Old title\0"));
+        old_info.extend(chunk(b"ICMT", b"Legacy comment\0"));
+        old_info.extend_from_slice(&private_info);
+        bytes.extend(chunk(b"LIST", &old_info));
+        bytes.extend(b"opaque trailing bytes");
+        fs::write(&path, bytes).unwrap();
+
+        let mut tag = ID3Tag::load_file(&path).unwrap();
+        assert_eq!(tag.get_raw("TIT2").unwrap(), ["Old title"]);
+        assert_eq!(tag.get_comments()[0].text, "Legacy comment");
+        tag.set_raw("TIT2", vec!["New title".into()], true);
+        tag.save_file(&path).unwrap();
+
+        let written = fs::read(&path).unwrap();
+        let riff_end = 8 + u32::from_le_bytes(written[4..8].try_into().unwrap()) as usize;
+        for original in [&cue, &associated, &wave_list, &unknown, &private_info] {
+            assert!(written[..riff_end].windows(original.len()).any(|chunk| chunk == original.as_slice()));
+        }
+        assert!(written[..riff_end].windows(4).any(|id| id == b"INFO"));
+        assert_eq!(&written[riff_end..], b"opaque trailing bytes");
+        let tag = ID3Tag::load_file(&path).unwrap();
+        assert_eq!(tag.get_raw("TIT2").unwrap(), ["New title"]);
+        assert_eq!(tag.get_comments()[0].text, "Legacy comment");
+    }
 }

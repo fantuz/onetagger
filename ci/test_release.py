@@ -115,6 +115,14 @@ class VersionTests(unittest.TestCase):
     def test_repository_versions_are_synchronized(self):
         tools.checked_version()
 
+    def test_release_body_links_versioned_macos_first_launch_instructions(self):
+        plan = {"marker": "<!-- example -->", "notes": "Release notes", "tag": f"v{VERSION}",
+                "source": SOURCE, "run_id": RUN}
+        body = release.release_body(plan, REPO)
+        self.assertIn(f"https://github.com/{REPO}/blob/v{VERSION}/README.md#first-launch-on-macos", body)
+        self.assertIn("ad-hoc signing", body)
+        self.assertIn("Privacy & Security → Open Anyway", body)
+
     def test_invalid_and_unpackageable_versions(self):
         for value in ["v1.7.1", "1.7", "1.7.1-rc.1", "1.7.1+build", "01.7.1", "1.7.65536", "1.7.1\n"]:
             with self.subTest(value=value), self.assertRaises(ValueError):

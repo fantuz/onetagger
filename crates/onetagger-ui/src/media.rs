@@ -47,7 +47,8 @@ fn mime(path: &std::path::Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "mp3" => Some("audio/mpeg"), "m4a" | "mp4" => Some("audio/mp4"),
         "wav" => Some("audio/wav"), "flac" => Some("audio/flac"),
-        "ogg" | "oga" | "opus" | "spx" => Some("audio/ogg"),
+        "opus" => Some("audio/ogg; codecs=opus"),
+        "ogg" | "oga" | "spx" => Some("audio/ogg"),
         "aif" | "aiff" => Some("audio/aiff"), _ => None,
     }
 }

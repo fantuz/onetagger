@@ -3,9 +3,11 @@ use crate::request_cache::RequestCache;
 use crate::request_pacer::RequestPacer;
 use anyhow::Error;
 use chrono::NaiveDate;
+use std::io::Read;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 use rspotify::clients::{BaseClient, OAuthClient};
-use rspotify::model::{TrackId, Id, AlbumId, ArtistId, Modality, Page, SimplifiedArtist};
+use rspotify::model::{TrackId, Id, AlbumId, ArtistId, Page, SimplifiedArtist};
 use rspotify::{Credentials, Config, AuthCodeSpotify, OAuth, scopes, ClientError, ClientResult};
 use rspotify::model::album::FullAlbum;
 use rspotify::model::artist::FullArtist;
@@ -13,6 +15,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use rspotify::model::track::FullTrack;
 use rspotify::model::audio::AudioFeatures;
 use onetagger_shared::{Settings, WEBSERVER_CALLBACKS, PORT};
+use onetagger_tag::TagDate;
 use onetagger_tagger::{AutotaggerSource, Track, TaggerConfig, AudioFileInfo, MatchingUtils, TrackNumber, AutotaggerSourceBuilder, PlatformInfo, supported_tags, SupportedTag, TrackMatch};
 
 static COOLDOWN: ProviderCooldown = ProviderCooldown::new();
@@ -22,8 +25,24 @@ static PACER: RequestPacer = RequestPacer::new();
 pub use rspotify;
 
 
-static PITCH_CLASS_MAJOR: [&'static str; 12] = ["C", "C#",   "D",  "D#",  "E",  "F",  "F#",  "G",  "G#",  "A",  "A#",  "B" ];
-static PITCH_CLASS_MINOR: [&'static str; 12] = ["Cm", "Dbm", "Dm", "Ebm", "Em", "Fm", "Gbm", "Gm", "Abm", "Am", "Bbm", "Bm"];
+#[derive(Debug)]
+pub struct SpotifyQuotaExceeded {
+    pub deferred: bool,
+}
+
+impl std::fmt::Display for SpotifyQuotaExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Spotify developer quota is exhausted")
+    }
+}
+
+impl std::error::Error for SpotifyQuotaExceeded {}
+
+fn quota_exceeded(body: impl Read) -> bool {
+    let Ok(body) = serde_json::from_reader::<_, serde_json::Value>(body.take(64 * 1024)) else { return false };
+    body.get("reason").or_else(|| body.pointer("/error/reason")).and_then(serde_json::Value::as_str)
+        == Some("QUOTA_EXCEEDED")
+}
 
 // Development Mode accepts up to ten candidates in one search request.
 const SEARCH_PAGE_SIZE: u32 = 10;
@@ -71,11 +90,13 @@ pub struct Spotify {
     slowdown: u16,
     album_cache: RequestCache<String, FullAlbum>,
     artist_cache: RequestCache<String, FullArtist>,
+    quota_exhausted: Arc<AtomicBool>,
 }
 
 impl Spotify {
     fn with_client(spotify: AuthCodeSpotify) -> Self {
-        Self { spotify, slowdown: 2, album_cache: RequestCache::default(), artist_cache: RequestCache::default() }
+        Self { spotify, slowdown: 2, album_cache: RequestCache::default(), artist_cache: RequestCache::default(),
+            quota_exhausted: Arc::new(AtomicBool::new(false)) }
     }
     /// Create AuthCodeSpotify with parameters
     pub fn create_client(client_id: &str, client_secret: &str) -> AuthCodeSpotify {
@@ -140,9 +161,9 @@ impl Spotify {
     where
         F: Fn(&Spotify) -> ClientResult<R>
     {
-        COOLDOWN.check()?;
+        self.check_request_budget()?;
         PACER.wait_scaled(Duration::from_millis(250), self.slowdown);
-        COOLDOWN.check()?;
+        self.check_request_budget()?;
         match f(self) {
             Ok(r) => {
                 COOLDOWN.record_success();
@@ -153,19 +174,31 @@ impl Spotify {
                     rspotify::http::HttpError::StatusCode(r) => {
                         // Rate limit
                         if matches!(r.status(), 429 | 503) {
+                            let status = r.status();
                             let fallback = Duration::from_secs(15);
                             let delay = r.header("Retry-After")
                                 .map(|header| retry_delay(Some(header.as_ref()), fallback))
                                 .unwrap_or(fallback);
+                            if status == 429 && quota_exceeded(r.into_reader()) {
+                                self.quota_exhausted.store(true, Ordering::Release);
+                                return Err(SpotifyQuotaExceeded { deferred: false }.into());
+                            }
                             return Err(COOLDOWN.pause(delay).into());
                         }
-                        return Err(anyhow!("Unknown Spotify status code: {}", r.status()));
+                        return Err(anyhow!("Spotify returned HTTP {}", r.status()));
                     },
                     e => return Err(e.into())
                 }
             },
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn check_request_budget(&self) -> Result<(), Error> {
+        if self.quota_exhausted.load(Ordering::Acquire) {
+            return Err(SpotifyQuotaExceeded { deferred: true }.into());
+        }
+        Ok(COOLDOWN.check()?)
     }
 
     /// Search tracks by query.
@@ -226,13 +259,14 @@ impl Spotify {
                     }
                     track.genres.extend(album.genres);
                 }
+                Err(error) if error.is::<SpotifyQuotaExceeded>() || error.is::<crate::ProviderRateLimited>() => return Err(error),
                 Err(e) => warn!("Failed to fetch album data: {}", e),
             }
         }
 
         // Fetch genres from artist if album has them unavailable
-        if config.tag_enabled(SupportedTag::Genre) && track.custom.get("artist_ids").is_some() {
-            for id in track.custom.get("artist_ids").unwrap().split('\0').filter(|id| !id.is_empty()) {
+        if track.genres.is_empty() && config.tag_enabled(SupportedTag::Genre) {
+            for id in track.custom.get("artist_ids").into_iter().flat_map(|ids| ids.split('\0')).filter(|id| !id.is_empty()) {
                 debug!("artist id: {id}");
                 match self.artist(&ArtistId::from_uri(id)?) {
                     Ok(artist) => {
@@ -242,27 +276,8 @@ impl Spotify {
                             }
                         }
                     },
+                    Err(error) if error.is::<SpotifyQuotaExceeded>() || error.is::<crate::ProviderRateLimited>() => return Err(error),
                     Err(e) => warn!("Failed to fetch artist data: {e}"),
-                }
-            }
-        }
-
-        // Fetch audio features
-        if config.tag_enabled(SupportedTag::Key) {
-            if let Some(track_id) = track.track_id.as_ref() {
-                match self.audio_features(&TrackId::from_id(track_id)?) {
-                    Ok(features) => {
-                        if features.key < 0 || features.key >= 12 {
-                            warn!("Spotify returned unkown key!");
-                        } else {
-                            match features.mode {
-                                Modality::Major => track.key = Some(PITCH_CLASS_MAJOR[features.key as usize].to_string()),
-                                Modality::Minor => track.key = Some(PITCH_CLASS_MINOR[features.key as usize].to_string()),
-                                v => warn!("Invalid audio features mode: {v:?}")
-                            }
-                        }
-                    },
-                    Err(e) => warn!("Failed to fetch audio features: {e}")
                 }
             }
         }
@@ -276,8 +291,13 @@ impl AutotaggerSource for Spotify {
         // Try ISRC
         if let Some(isrc) = info.isrc.as_ref() {
             let query = format!("isrc:{isrc}");
-            if let Some(track) = self.search_tracks(&query, 1)?.into_iter().next() {
-                return Ok(vec![TrackMatch::new_isrc(full_track_to_track(track))]);
+            let limit = if config.fetch_all_results { 20 } else { 1 };
+            let matches: Vec<_> = self.search_tracks(&query, limit)?.into_iter().map(full_track_to_track)
+                .filter(|track| track.isrc.as_deref().is_none_or(|candidate| candidate.eq_ignore_ascii_case(isrc))
+                    && MatchingUtils::match_duration(info, track, config))
+                .map(TrackMatch::new_isrc).collect();
+            if !matches.is_empty() {
+                return Ok(matches);
             }
         };
 
@@ -299,7 +319,10 @@ impl AutotaggerSource for Spotify {
 
 /// Convert rspotify FullTrack into 1T Track
 fn full_track_to_track(track: FullTrack) -> Track {
-    Track {
+    let release = track.album.release_date.as_deref().and_then(TagDate::parse);
+    let release_year = release.as_ref().and_then(|date| i16::try_from(date.year).ok());
+    let release_date = release.as_ref().and_then(|date| NaiveDate::from_ymd_opt(date.year, date.month?.into(), date.day?.into()));
+    let mut result = Track {
         platform: "spotify".to_string(),
         title: track.name,
         version: None,
@@ -308,18 +331,22 @@ fn full_track_to_track(track: FullTrack) -> Track {
         album_artists: track.album.artists.into_iter().map(|a| a.name).collect(),
         album: Some(track.album.name),
         art: track.album.images.first().map(|i| i.url.to_string()),
-        url: format!("https://open.spotify.com/track/{}", track.id.as_ref().map(|i| i.id()).unwrap_or("")),
+        url: track.id.as_ref().map(|id| format!("https://open.spotify.com/track/{}", id.id())).unwrap_or_default(),
         track_id: track.id.map(|i| i.id().to_string()),
         release_id: track.album.id.map(|i| i.id().to_string()),
-        duration: track.duration.to_std().unwrap().into(),
+        duration: track.duration.to_std().unwrap_or_default(),
         track_number: Some(TrackNumber::Number(track.track_number as i32)),
         isrc: track.external_ids.into_iter().find(|(k, _)| k == "isrc").map(|(_, v)| v.to_string()),
-        release_year: track.album.release_date.as_ref().map(|d| if d.len() > 4 { d[0..4].to_string().parse().ok() } else { None }).flatten(),
-        release_date: track.album.release_date.as_ref().map(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()).flatten(),
+        release_year,
+        release_date,
         explicit: Some(track.explicit),
         thumbnail: track.album.images.iter().min_by(|a, b| a.width.unwrap_or(1000).partial_cmp(&b.width.unwrap_or(1000)).unwrap()).map(|i| i.url.to_string()),
         ..Default::default()
+    };
+    if let Some(month) = release.filter(|date| date.day.is_none()).and_then(|date| date.month) {
+        result.set_release_month(month);
     }
+    result
 }
 
 /// For creating instance of Spotify AT plugin
@@ -349,7 +376,7 @@ impl AutotaggerSourceBuilder for SpotifyBuilder {
             version: "1.0.0".to_string(),
             custom_options: Default::default(),
             requires_auth: true,
-            supported_tags: supported_tags!(Title, Artist, AlbumArtist, Album, AlbumArt, URL, TrackId, ReleaseId, Duration, TrackNumber, ISRC, ReleaseDate, Genre, Key, Label, Explicit)
+            supported_tags: supported_tags!(Title, Artist, AlbumArtist, Album, AlbumArt, URL, TrackId, ReleaseId, Duration, TrackNumber, ISRC, ReleaseDate, Genre, Label, Explicit)
         }
     }
 }
@@ -414,5 +441,28 @@ mod tests {
         assert_eq!(track.title, "Track 1");
         assert!(track.label.is_none());
         assert!(track.genres.is_empty());
+    }
+
+    #[test]
+    fn spotify_quota_is_distinct_from_throttle_and_stops_requests_on_the_source() {
+        assert!(quota_exceeded(br#"{"error":{"status":429,"reason":"QUOTA_EXCEEDED"}}"#.as_slice()));
+        assert!(quota_exceeded(br#"{"reason":"QUOTA_EXCEEDED"}"#.as_slice()));
+        assert!(!quota_exceeded(br#"{"error":{"status":429,"message":"Rate limit"}}"#.as_slice()));
+        assert!(!quota_exceeded(b"invalid response".as_slice()));
+        let source = Spotify::with_client(AuthCodeSpotify::default());
+        source.quota_exhausted.store(true, Ordering::Release);
+        let failure = source.clone().rate_limit_wrap::<_, ()>(|_| panic!("made a request after exhausting the quota")).unwrap_err();
+        assert!(failure.downcast_ref::<SpotifyQuotaExceeded>().unwrap().deferred);
+        assert!(!SpotifyBuilder::new().info().supported_tags.contains(&SupportedTag::Key));
+    }
+
+    #[test]
+    fn spotify_release_dates_preserve_available_precision() {
+        for date in ["1981", "1981-12", "2024-02-29"] {
+            let mut item = track(1);
+            item["album"]["release_date"] = json!(date);
+            let track = full_track_to_track(serde_json::from_value(item).unwrap());
+            assert_eq!(track.release_tag_date().unwrap().to_string(), date);
+        }
     }
 }

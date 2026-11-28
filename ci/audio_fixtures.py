@@ -12,6 +12,8 @@ FORMATS = {
     'tone.flac': ['-c:a', 'flac'],
     'tone.mp3': ['-c:a', 'libmp3lame', '-b:a', '128k'],
     'tone.ogg': ['-c:a', 'libvorbis', '-q:a', '3'],
+    'tone.opus': ['-c:a', 'libopus', '-b:a', '32k'],
+    'tone.spx': ['-ac', '1', '-ar', '16000', '-c:a', 'libspeex'],
     'tone-aac.m4a': ['-c:a', 'aac', '-b:a', '96k'],
     'tone-alac.m4a': ['-c:a', 'alac'],
 }
@@ -27,6 +29,8 @@ def main():
                         '-map_metadata', '-1', *options, str(path)], check=True)
         data = path.read_bytes()
         files[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+        if name == 'tone.spx':
+            files[name]['source'] = 'Synthetic 440 Hz sine, 16000 Hz, mono, two seconds'
     version = subprocess.check_output(['ffmpeg', '-version'], text=True).splitlines()[0]
     (OUTPUT / 'manifest.json').write_text(json.dumps({'generator': version,
         'source': 'Synthetic 440 Hz sine, 44100 Hz, stereo, two seconds', 'files': files}, indent=2) + '\n')

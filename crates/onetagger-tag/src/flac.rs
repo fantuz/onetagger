@@ -66,11 +66,7 @@ impl FLACTag {
     // Set date in vorbis to tag
     fn set_date_inner(&mut self, tag: &str, date: &TagDate, overwrite: bool) {
         if overwrite || self.tag.get_vorbis(tag).is_none() {
-            let v = match date.has_md() {
-                true => format!("{}-{:02}-{:02}", date.year, date.month.unwrap(), date.day.unwrap()),
-                false => date.year.to_string()
-            };
-            self.tag.set_vorbis(tag, vec![v]);
+            self.tag.set_vorbis(tag, vec![date.to_string()]);
         }
     }
 
@@ -235,24 +231,7 @@ impl TagImpl for FLACTag {
     }
 
     fn get_date(&self) -> Option<TagDate> {
-        let data = &self.get_raw("DATE")?[0];
-        // YYYY-MM-DD
-        if data.len() >= 10 {
-            return Some(TagDate {
-                year: data[0..4].parse().ok()?,
-                month: data[5..7].parse().ok(),
-                day: data[8..10].parse().ok()
-            });
-        }
-        // YYYY
-        if data.len() >= 4 {
-            return Some(TagDate {
-                year: data.parse().ok()?,
-                month: None,
-                day: None
-            });
-        }
-        None
+        TagDate::parse(self.get_raw("DATE")?.first()?)
     }
 
     fn set_track_number(&mut self, track_number: &str, track_total: Option<u16>, overwrite: bool) {
@@ -262,16 +241,15 @@ impl TagImpl for FLACTag {
         }
     }
 
-    fn set_lyrics(&mut self, lyrics: &Lyrics, synced: bool, overwrite: bool) {
+    fn set_lyrics(&mut self, lyrics: &Lyrics, synced: bool, overwrite: bool) -> bool {
         if synced {
             warn!("FLAC doesn't support synchronized lyrics!");
-            return;
+            return false;
         }
-        if !overwrite || self.get_raw("LYRICS").is_some() {
-            return;
+        if overwrite || self.get_raw("LYRICS").is_none() {
+            self.tag.set_vorbis("LYRICS", vec![lyrics.text()]);
         }
-        self.tag.remove_vorbis("LYRICS");
-        self.tag.set_vorbis("LYRICS", vec![lyrics.text()]);
+        true
     }
 
     fn set_explicit(&mut self, explicit: bool) {

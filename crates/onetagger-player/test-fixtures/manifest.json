@@ -29,6 +29,17 @@
     "tone-alac.m4a": {
       "bytes": 34974,
       "sha256": "accfb137884fbe86be4a28195d952c75d9457b86ab9eea40fd3798124070be48"
+    },
+    "tone.opus": {
+      "bytes": 10351,
+      "sha256": "939b165a105a2ebe53581788637d366feeff921b9ed5ac860108faabd5f2f30a",
+      "generator": "ffmpeg version 6.1.1-3ubuntu5"
+    },
+    "tone.spx": {
+      "bytes": 7345,
+      "sha256": "0de0dff36a116f85d6b23ccd9ec3856671a792244451727393802dbe9c51f3bb",
+      "generator": "ffmpeg version 6.1.1-3ubuntu5",
+      "source": "Synthetic 440 Hz sine, 16000 Hz, mono, two seconds"
     }
   }
 }
