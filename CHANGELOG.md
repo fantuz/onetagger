@@ -1,5 +1,15 @@
 ## Unreleased (fantuz fork)
 
+## 2.4.0 — 2026-11-28
+
+### Read-only catalog lookup
+
+- Library tools such as recordbox can look up one recording with `onetagger-cli lookup --json`. Pass the catalog artist and full track title, including the mix or edition, on standard input. The command requires no provider account and runs without opening audio files, editing tags, or initializing a OneTagger profile.
+- MusicBrainz is the default and returns voted recording genres with a recording ID in schema 1. Choose `--provider itunes` for the US storefront’s primary song genre, or `--provider deezer` for genres and the label of the verified release. Both return source track and release IDs in schema 2.
+- The CLI reports ambiguous or missing matches separately from service failures. It checks edition names and refuses incomplete result sets. Clients can handle provider throttling using exit code 3. Transport errors include the underlying cause and omit the lookup URL.
+
+[Lookup protocol and examples](https://github.com/fantuz/onetagger/blob/v2.4.0/docs/provider-api-capabilities.md) · [Full changes since v2.3.0](https://github.com/fantuz/onetagger/compare/v2.3.0...v2.4.0)
+
 ## 2.3.0 — 2026-11-28
 
 ### WAV and Edit Tags
