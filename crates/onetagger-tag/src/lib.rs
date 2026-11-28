@@ -734,4 +734,15 @@ mod commit_tests {
             }
         }
     }
+
+    #[test]
+    fn speex_tags_round_trip_without_a_playback_decoder() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("voice.spx");
+        fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../onetagger-player/test-fixtures/tone.spx"), &path).unwrap();
+        let mut file = Tag::load_file(&path, true).unwrap();
+        file.tag_mut().set_field(Field::Title, vec!["Spoken sample".into()], true);
+        file.tag_mut().save_file(&path).unwrap();
+        assert_eq!(Tag::load_file(&path, false).unwrap().tag().get_field(Field::Title).unwrap(), ["Spoken sample"]);
+    }
 }

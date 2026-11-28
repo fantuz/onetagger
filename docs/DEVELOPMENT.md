@@ -5,6 +5,7 @@ The application remains a Rust workspace with a Vue/Quasar frontend. Python is u
 ## Reproducible dependencies
 
 - Rust is pinned by `rust-toolchain.toml` (1.100.0).
+- Native builds use CMake to compile bundled libopus.
 - The frontend uses Node.js 24 and pnpm 10.11.0 (`client/package.json`).
 - Commit `Cargo.lock` and `client/pnpm-lock.yaml` whenever dependency declarations change.
 - Normal builds use `cargo ... --locked` and `pnpm install --frozen-lockfile`. CI never runs `cargo update` or an unlocked frontend installation as part of validation.

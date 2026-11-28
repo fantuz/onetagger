@@ -957,7 +957,7 @@ mod save_tests {
     fn both_editors_save_every_supported_container_with_an_open_decoder_and_preserve_audio() {
         // Runs on Linux, Windows, Intel macOS and Apple Silicon in the native CI
         // matrix. Decode real audio before and after replacement, without a device.
-        for name in ["tone.mp3", "tone.wav", "tone.aiff", "tone.flac", "tone.ogg", "tone-aac.m4a", "tone-alac.m4a"] {
+        for name in ["tone.mp3", "tone.wav", "tone.aiff", "tone.flac", "tone.ogg", "tone.opus", "tone-aac.m4a", "tone-alac.m4a"] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join(format!("Édition 音楽 {name}"));
             std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR"))

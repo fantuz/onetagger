@@ -75,15 +75,16 @@ responses retain their temporary file until they close. Converted previews
 support byte ranges too. Originals are never modified. This mode does not open
 the server's audio output device.
 
-Native playback uses streaming Symphonia decoders for MP3, FLAC, WAV, Vorbis,
-AAC, ALAC and AIFF. Seeking uses decoder seek operations instead of decoding and
-discarding the prefix. The UI obtains native playback position from the backend;
+Native playback streams MP3, FLAC, WAV, Vorbis, AAC, ALAC and AIFF through
+Symphonia and mono or stereo Ogg Opus through bundled libopus. Opus previews and
+waveforms use the same decoder. Speex is supported for tag editing. Seeking uses
+decoder seek operations, with Opus pre-roll for accurate restart. The UI obtains native playback position from the backend;
 browser playback follows its audio element's time and ended events.
 
 Waveforms use a constant-memory RMS calculation. Summaries are cached, delivered
 in one response and cancelled when their track is replaced. Playback does not
 wait for a waveform. Tagging format support and browser codec support remain
-distinct from the native decoder formats listed above.
+distinct from the native decoder formats listed above. [libopus notice](libopus-COPYING.txt)
 
 ## Language loading
 
