@@ -7,6 +7,14 @@ use tempfile::Builder;
 /// Update a private sibling copy, then replace the original only after a successful sync.
 /// Following the source's canonical path preserves symlink targets rather than replacing links.
 pub fn atomic_update(path: &Path, update: impl FnOnce(&Path) -> Result<(), Error>) -> Result<(), Error> {
+    atomic_rewrite(path, |source, staged| {
+        fs::copy(source, staged)?;
+        update(staged)
+    })
+}
+
+/// Stream a replacement from the original directly into its private sibling.
+pub(crate) fn atomic_rewrite(path: &Path, rewrite: impl FnOnce(&Path, &Path) -> Result<(), Error>) -> Result<(), Error> {
     let path = fs::canonicalize(path)?;
     let metadata = fs::metadata(&path)?;
     if !metadata.is_file() || metadata.permissions().readonly() {
@@ -14,8 +22,8 @@ pub fn atomic_update(path: &Path, update: impl FnOnce(&Path) -> Result<(), Error
     }
     let suffix = path.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
     let staged = Builder::new().prefix(".onetagger-").suffix(&suffix).tempfile_in(path.parent().unwrap())?;
-    fs::copy(&path, staged.path())?;
-    update(staged.path()).context("Tag update failed; the original file was preserved")?;
+    rewrite(&path, staged.path()).context("Tag update failed; the original file was preserved")?;
+    fs::set_permissions(staged.path(), metadata.permissions())?;
     fs::OpenOptions::new().write(true).open(staged.path())?.sync_all()?;
     persist_update(staged, &path).with_context(|| format!("Could not replace the original audio file: {}", path.display()))?;
     Ok(())

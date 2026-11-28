@@ -226,20 +226,22 @@ impl TagImpl for ID3Tag {
             self.set_raw("TPOS", self.get_raw("TPOS").unwrap_or(vec![]), true);
         }
 
-        // Stage every format in a sibling file before replacing the original.
-        crate::file_ops::atomic_update(path, |path| {
         match self.format {
-            ID3AudioFormat::MP3 => {
+            ID3AudioFormat::MP3 => crate::file_ops::atomic_update(path, |staged| {
                 Encoder::new()
                     .version(version)
                     .padding(2048)
-                    .write_to_path(&self.tag, path)?;
-            },
-            ID3AudioFormat::AIFF => self.tag.write_to_path(path, version)?,
-            ID3AudioFormat::WAV => crate::wav::write_wav(path, self.tag.clone(), version)?,
+                    .write_to_path(&self.tag, staged)?;
+                Ok(())
+            })?,
+            ID3AudioFormat::AIFF => crate::file_ops::atomic_update(path, |staged| {
+                self.tag.write_to_path(staged, version)?;
+                Ok(())
+            })?,
+            ID3AudioFormat::WAV => crate::file_ops::atomic_rewrite(path, |source, staged| {
+                crate::wav::write_wav(source, staged, &self.tag, version)
+            })?,
         }
-        Ok(())
-        })?;
         self.version_on_disk = Some(version);
         Ok(())
     }
