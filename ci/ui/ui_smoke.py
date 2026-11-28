@@ -732,13 +732,13 @@ class BrowserTests(unittest.TestCase):
                 }
             """), "The settings icon should render using the bundled icon font")
             page.get_by_role("tab", name="Edit Tags", exact=True).click()
-            expect(page.locator("#fileList .te-file")).to_have_count(2)
+            expect(page.locator("#fileList .te-file")).to_have_count(3)
             page.get_by_label("Filter", exact=True).fill("synthetic")
             expect(page.locator("#fileList .te-file")).to_have_count(1)
             page.get_by_label("Filter", exact=True).fill("no match")
             expect(page.locator("#fileList .te-file")).to_have_count(0)
             page.get_by_label("Filter", exact=True).fill("")
-            expect(page.locator("#fileList .te-file")).to_have_count(2)
+            expect(page.locator("#fileList .te-file")).to_have_count(3)
             page.get_by_role("tab", name="Home", exact=True).click()
             expect(page.get_by_text("The ultimate cross-platform music tagger for DJs", exact=True)).to_be_visible()
 
