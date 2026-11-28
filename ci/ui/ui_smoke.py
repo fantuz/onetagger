@@ -32,7 +32,7 @@ TRACK = {
     "images": [{"mime": "image/png", "data": PNG, "kind": kind,
                 "description": "Synthetic artwork", "width": 1, "height": 1}
                for kind in ["CoverFront", "CoverBack"]],
-    "id3": {"comments": [{"lang": "eng", "description": "test", "text": "Synthetic comment"}],
+    "id3": {"id3v24": False, "comments": [{"lang": "eng", "description": "test", "text": "Synthetic comment"}],
             "unsync_lyrics": [{"lang": "eng", "description": "test", "text": "Synthetic lyrics"}],
             "popularimeter": None},
 }
@@ -139,11 +139,16 @@ class Backend:
             elif action == "tagEditorFolder":
                 response = {"action": action, "path": "/music", "recursive": False, "files": [
                     {"filename": name, "path": "/music/" + name, "dir": False, "playlist": False}
-                    for name in ["Synthetic track.mp3", "Another track.flac"]]}
+                    for name in ["Synthetic track.mp3", "Modern track.wav", "Another track.flac"]]}
             elif action == "tagEditorLoad":
                 track = deepcopy(TRACK)
                 track["path"] = data["path"]
                 track["filename"] = data["path"].rsplit("/", 1)[-1]
+                track["format"] = track["filename"].rsplit(".", 1)[-1]
+                if track["format"] == "wav":
+                    track["id3"]["id3v24"] = True
+                elif track["format"] == "flac":
+                    track["id3"] = None
                 response = {"action": action, "data": track}
             elif action == "quickTagFolder":
                 response = {"action": action, "path": "/music", "files": []}
@@ -773,6 +778,31 @@ class BrowserTests(unittest.TestCase):
 
     def select_other_track(self, page):
         page.locator("#fileList").get_by_text("Another track.flac", exact=True).click()
+
+    def test_id3_version_follows_the_file_and_can_be_saved_without_other_edits(self):
+        with self.session() as (page, backend):
+            self.open_editor(page)
+            version = page.get_by_role("switch", name="Use ID3v2.4", exact=True)
+            expect(version).to_have_attribute("aria-checked", "false")
+            page.locator("#fileList").get_by_text("Modern track.wav", exact=True).click()
+            expect(version).to_have_attribute("aria-checked", "true")
+            page.locator("#fileList").get_by_text("Synthetic track.mp3", exact=True).click()
+            expect(version).to_have_attribute("aria-checked", "false")
+            version.click()
+
+            backend.save_failures = 1
+            save = page.get_by_role("button", name="Save", exact=True)
+            save.click()
+            expect(page.get_by_role("alert")).to_contain_text("Your edits are retained")
+            expect(version).to_have_attribute("aria-checked", "true")
+            save.click()
+            expect(page.get_by_text("Tags written!", exact=True)).to_be_visible()
+            self.assertEqual(backend.saves()[0], backend.saves()[1])
+            self.assertEqual(backend.saves()[1]["changes"], [])
+            self.assertIs(backend.saves()[1]["id3v24"], True)
+            self.select_other_track(page)
+            expect(page.locator(".text-center.monospace")).to_have_text("Another track.flac")
+            expect(version).to_have_count(0)
 
     def test_failed_save_retains_edits_and_retry_resends_original_changes(self):
         with self.session() as (page, backend):

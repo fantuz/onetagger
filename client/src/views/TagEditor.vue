@@ -311,12 +311,10 @@
                     <q-separator class='q-mx-auto' :style='"max-width: 513px; margin-top: 32px; margin-bottom: 25px;"' inset color="dark"/>
                     
                     <!-- ID3v2.4 -->
-                    <div class='q-mt-lg text-center'>
+                    <div v-if='file.id3' class='column flex-center q-mt-lg'>
                         <div class='text-subtitle2 text-bold text-primary custom-margin'>
                             {{ t('tools.options') }}
                         </div>
-                    </div>
-                    <div class='column flex-center'>
                         <q-toggle :label="t('tools.useId3v24')" left-label style='width: 160px;' class='justify-between' v-model='id3v24'></q-toggle>
                     </div>
             </div>
@@ -371,7 +369,7 @@ import AddAlbumArt from '../components/AddAlbumArt.vue';
 import draggable from 'vuedraggable';
 import { tagDescription } from '../scripts/tags';
 import type { ID3Comment, TagEditorImage } from '../scripts/tags';
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
 import { get1t } from '../scripts/onetagger';
 import { useQuasar } from 'quasar';
@@ -401,12 +399,11 @@ const id3v24 = ref(false);
 const manualTagPath = ref<string | undefined>(undefined);
 const saving = ref(false);
 const saveError = ref<string | undefined>(undefined);
-const versionChanged = ref(false);
-watch(id3v24, () => { versionChanged.value = true; });
+const versionChanged = computed(() => !!file.value?.id3 && id3v24.value !== file.value.id3.id3v24);
 const dirty = computed(() => changes.value.length > 0 || versionChanged.value);
 let saveSequence = 0;
 let switchingFile = false;
-let pendingSave: { id: string; path: string; promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
+let pendingSave: { id: string; path: string; id3v24: boolean; promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
 
 async function prepareToLeave(): Promise<boolean> {
     if (pendingSave && !await pendingSave.promise) return false;
@@ -424,7 +421,6 @@ async function prepareToLeave(): Promise<boolean> {
 onBeforeRouteLeave(async () => {
     if (!await prepareToLeave()) return false;
     changes.value = [];
-    versionChanged.value = false;
     return true;
 });
 
@@ -443,7 +439,7 @@ async function loadFile(path: string) {
     try {
         if (!await prepareToLeave()) return;
         changes.value = [];
-        versionChanged.value = false;
+        id3v24.value = file.value?.id3?.id3v24 ?? false;
         saveError.value = undefined;
         await $1t.send('tagEditorLoad', {path});
         if ($1t.settings.value.tagEditorPlayer)
@@ -727,7 +723,7 @@ function save(): Promise<boolean> {
     const id = `tag-editor-${++saveSequence}`;
     let resolve!: (ok: boolean) => void;
     const promise = new Promise<boolean>(done => { resolve = done; });
-    pendingSave = { id, path: file.value.path, promise, resolve };
+    pendingSave = { id, path: file.value.path, id3v24: id3v24.value, promise, resolve };
     saving.value = true;
     saveError.value = undefined;
     $1t.send('tagEditorSave', {
@@ -742,14 +738,19 @@ function save(): Promise<boolean> {
     return promise;
 }
 
-function finishSave(ok: boolean, message?: string) {
+function finishSave(ok: boolean, message?: string, tags?: Record<string, string>) {
     if (!pendingSave) return;
     const pending = pendingSave;
     pendingSave = undefined;
     saving.value = false;
     if (ok) {
-        changes.value = [];
-        versionChanged.value = false;
+        if (file.value?.path === pending.path) {
+            changes.value = [];
+            if (file.value.id3 && versionChanged.value) {
+                if (tags) file.value.tags = tags;
+                file.value.id3.id3v24 = pending.id3v24;
+            }
+        }
         $q.notify({ message: t('tools.tagsWritten'), timeout: 4000, position: 'top-right' });
     } else {
         saveError.value = t('tools.saveUnconfirmed', { detail: message ?? t('tools.retrySave') });
@@ -796,13 +797,14 @@ function wsCallback(e: any) {
             break;
         case 'tagEditorLoad':
             file.value = e.data;
+            id3v24.value = e.data.id3?.id3v24 ?? false;
             break;
         case 'tagEditorDisconnected':
             onSocketClose();
             break;
         case 'tagEditorSave':
             if (pendingSave && e.requestId === pendingSave.id && e.path === pendingSave.path) {
-                finishSave(e.status === 'ok', translateBackendMessage(e));
+                finishSave(e.status === 'ok', translateBackendMessage(e), e.tags);
             }
             break;
         // Internal callback

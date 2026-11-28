@@ -4,6 +4,7 @@ use std::fs::File;
 use std::collections::HashMap;
 use std::path::Path;
 use id3::{Tag, TagLike, Frame, Version};
+use id3::frame::Comment;
 use once_cell::sync::Lazy;
 use riff::{Chunk, ChunkId, LIST_ID, RIFF_ID, ChunkContents};
 
@@ -13,6 +14,7 @@ static ID3_ID_2: ChunkId = ChunkId { value: [0x49, 0x44, 0x33, 0x20] };
 /// RIFF WAVE chunk
 static WAVE_ID:  ChunkId = ChunkId { value: [0x57, 0x41, 0x56, 0x45] };
 static INFO_ID:  ChunkId = ChunkId { value: [0x49, 0x4E, 0x46, 0x4F] };
+static ICMT_ID: ChunkId = ChunkId { value: *b"ICMT" };
 
 /// ID3 Frame to RIFF ChunkID
 static ID3_RIFF: Lazy<HashMap<&'static str, ChunkId>> = Lazy::new(|| {
@@ -20,7 +22,6 @@ static ID3_RIFF: Lazy<HashMap<&'static str, ChunkId>> = Lazy::new(|| {
     m.insert("TIT2", ChunkId::new("INAM").unwrap());
     m.insert("TALB", ChunkId::new("IPRD").unwrap());
     m.insert("TPE1", ChunkId::new("IART").unwrap());
-    m.insert("COMM", ChunkId::new("ICMT").unwrap());
     m.insert("TCON", ChunkId::new("IGNR").unwrap());
     m.insert("TSRC", ChunkId::new("ISRC").unwrap());
     m
@@ -116,14 +117,25 @@ pub(crate) fn write_wav(path: impl AsRef<Path>, tag: Tag, version: Version) -> R
             }
         }
     }
+    // RIFF INFO has a single unnamed comment. Keep named ID3 comments in ID3.
+    if let Some(comment) = tag.comments().find(|comment| comment.description.is_empty()) {
+        let mut data = comment.text.as_bytes().to_vec();
+        data.push(0);
+        list_data.push(ChunkContents::Data(ICMT_ID.clone(), data));
+    }
     
     // Add original LIST chunks
     for chunk in list_chunks {
         if list_data.iter().any(|c| matches!(c, ChunkContents::Data(id, _) if id == &chunk.id())) {
             continue;
         }
-        let data = ChunkContents::Data(chunk.id(), chunk.read_contents(&mut file)?);
-        list_data.push(data);
+        let data = chunk.read_contents(&mut file)?;
+        // A readable ICMT is imported when COMM is missing. An explicit removal
+        // must clear that fallback too, or the comment will reappear on reload.
+        if chunk.id() == ICMT_ID && tag.get("COMM").is_none() && std::str::from_utf8(&data).is_ok() {
+            continue;
+        }
+        list_data.push(ChunkContents::Data(chunk.id(), data));
     }
     let list_chunk = ChunkContents::Children(LIST_ID.clone(), INFO_ID.clone(), list_data);
 
@@ -139,7 +151,7 @@ pub(crate) fn write_wav(path: impl AsRef<Path>, tag: Tag, version: Version) -> R
 }
 
 /// Read WAV from file, will copy missing tags from RIFF to ID3
-pub(crate) fn read_wav(path: impl AsRef<Path>) -> Result<Tag, Error> {
+pub(crate) fn read_wav(path: impl AsRef<Path>) -> Result<(Tag, Option<Version>), Error> {
     let mut file = BufReader::new(File::open(path)?);
     let file_len = validate_header(&mut file)?;
     let mut offset = 0;
@@ -180,7 +192,9 @@ pub(crate) fn read_wav(path: impl AsRef<Path>) -> Result<Tag, Error> {
 
     // Read ID3 using the new ID3 reader
     file.seek(SeekFrom::Start(0))?;
-    let mut id3 = id3::no_tag_ok(Tag::read_from2(&mut file))?.unwrap_or_default();
+    let embedded_tag = id3::no_tag_ok(Tag::read_from2(&mut file))?;
+    let version = embedded_tag.as_ref().map(Tag::version);
+    let mut id3 = embedded_tag.unwrap_or_default();
 
     // Copy tags from RIFF to ID3 if missing
     for (frame_name, chunk_id) in ID3_RIFF.iter() {
@@ -193,8 +207,19 @@ pub(crate) fn read_wav(path: impl AsRef<Path>) -> Result<Tag, Error> {
             }
         }
     }
+    if id3.get("COMM").is_none() {
+        if let Some(chunk) = chunks.iter().find(|chunk| chunk.id() == ICMT_ID) {
+            if let Ok(text) = String::from_utf8(chunk.read_contents(&mut file)?) {
+                id3.add_frame(Comment {
+                    lang: "XXX".into(),
+                    description: String::new(),
+                    text: text.trim_end_matches('\0').to_owned(),
+                });
+            }
+        }
+    }
 
-    Ok(id3)
+    Ok((id3, version))
 }
 
 // Validate before parsing or staging a replacement; a zero-length RIFF/LIST must not loop.
