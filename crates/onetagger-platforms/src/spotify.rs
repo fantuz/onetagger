@@ -343,7 +343,7 @@ fn full_track_to_track(track: FullTrack) -> Track {
         thumbnail: track.album.images.iter().min_by(|a, b| a.width.unwrap_or(1000).partial_cmp(&b.width.unwrap_or(1000)).unwrap()).map(|i| i.url.to_string()),
         ..Default::default()
     };
-    if let Some(month) = release.and_then(|date| date.month) {
+    if let Some(month) = release.filter(|date| date.day.is_none()).and_then(|date| date.month) {
         result.set_release_month(month);
     }
     result

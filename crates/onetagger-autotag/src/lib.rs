@@ -361,6 +361,7 @@ fn save_lrc(path: &Path, lyrics: &str) -> std::io::Result<()> {
     let directory = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let mut staged = tempfile::NamedTempFile::new_in(directory)?;
     staged.write_all(lyrics.as_bytes())?;
+    staged.as_file().sync_all()?;
     match staged.persist_noclobber(path) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),

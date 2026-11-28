@@ -118,7 +118,7 @@
                         </div>
                         
                         
-                        <div v-if='id3TextValues[tag]' class='col-8 column q-gutter-y-xs'>
+                        <div v-if='Object.hasOwn(id3TextValues, tag)' class='col-8 column q-gutter-y-xs'>
                             <div v-for='(_, index) in id3TextValues[tag]' :key='index' class='row items-center'>
                                 <q-input v-model='id3TextValues[tag][index]' dir='auto' filled dense class='col'
                                     :aria-label="t('tools.tagInput', { tag: tag + ' ' + (index + 1) })"
@@ -139,7 +139,7 @@
                         ></q-input>
 
                         <div class='col-1 q-pl-md q-pt-xs'>
-                            <q-btn v-if='id3v24 && (id3TextValues[tag] || /^(TPE[1-4]|TCON|TCOM|TEXT)$/.test(tag))'
+                            <q-btn v-if='id3v24 && (Object.hasOwn(id3TextValues, tag) || /^(TPE[1-4]|TCON|TCOM|TEXT)$/.test(tag))'
                                 :aria-label="t('tools.add')" icon='mdi-plus' round dense flat
                                 @click='addID3TextValue(tag)' />
                             <q-btn round dense flat @click='removeTag(tag)'>
